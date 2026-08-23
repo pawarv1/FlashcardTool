@@ -1,11 +1,20 @@
 import os
+import random
 import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage
 from ingest import ingest_document
 from agent import agent_graph, CHROMA_COLLECTION
 from quiz_engine import generate_quiz_question, grade_user_answer
-from storage_utils import create_folder, create_deck, get_folders, get_decks, save_card_to_json, load_deck, update_deck_cards, update_single_card, delete_single_card
-
+from storage_utils import (
+    create_folder, 
+    create_deck, 
+    get_folders, 
+    get_decks, 
+    save_card_to_json, 
+    load_deck, 
+    update_single_card, 
+    delete_single_card
+)
 
 # 1. PAGE CONFIG
 st.set_page_config(
@@ -22,9 +31,14 @@ if "current_folder" not in st.session_state:
 if "current_deck" not in st.session_state:
     st.session_state.current_deck = None
 
+if "study_card_index" not in st.session_state:
+    st.session_state.study_card_index = 0
+
+if "study_is_flipped" not in st.session_state:
+    st.session_state.study_is_flipped = False
+
 CARD_TYPES = ["concept", "code", "term", "problem"]
 
-# Helper to display media link as image if direct URL, or standard link
 def render_media(media_url: str):
     if not media_url:
         return
@@ -141,6 +155,8 @@ with tab_folders:
     if st.session_state.current_folder is not None and st.session_state.current_deck is not None:
         if st.button(f"⬅️ Back to Folder: {st.session_state.current_folder}"):
             st.session_state.current_deck = None
+            st.session_state.study_card_index = 0
+            st.session_state.study_is_flipped = False
             st.rerun()
 
         st.header(f"Deck: {st.session_state.current_deck}")
@@ -150,6 +166,9 @@ with tab_folders:
         # SUB-TABS INSIDE DECK VIEW
         deck_tab_cards, deck_tab_study = st.tabs(["🎴 Cards", "📖 Study Mode"])
 
+        deck_content = load_deck(st.session_state.current_folder, st.session_state.current_deck)
+        cards = deck_content.get("cards", [])
+
         # SUB-TAB 1: CARD LIST & MANAGEMENT
         with deck_tab_cards:
             col_title, col_btn = st.columns([4, 1])
@@ -157,8 +176,6 @@ with tab_folders:
                 if st.button("➕ Add Card", use_container_width=True):
                     new_card_popup()
 
-            deck_content = load_deck(st.session_state.current_folder, st.session_state.current_deck)
-            cards = deck_content.get("cards", [])
             st.subheader(f"Cards ({len(cards)})")
 
             if not cards:
@@ -192,10 +209,95 @@ with tab_folders:
                             if card.get("media_link"):
                                 render_media(card.get("media_link"))
 
-        # SUB-TAB 2: STUDY MODE (PLACEHOLDER FOR ACTIVE RECALL)
+        # SUB-TAB 2: INTERACTIVE STUDY MODE
         with deck_tab_study:
-            st.subheader("Interactive Study Mode")
-            st.info("Interactive card flipping / active recall study session will go here.")                
+            if not cards:
+                st.info("Add cards to this deck to start studying!")
+            else:
+                total_cards = len(cards)
+                
+                if st.session_state.study_card_index >= total_cards:
+                    st.session_state.study_card_index = 0
+
+                curr_idx = st.session_state.study_card_index
+                curr_card = cards[curr_idx]
+
+                st.markdown(f"**Card {curr_idx + 1} of {total_cards}**")
+                st.progress((curr_idx + 1) / total_cards)
+
+                with st.container(border=True):
+                    card_type = curr_card.get("card_type", "concept").upper()
+                    mastery = curr_card.get("mastery_level", 0)
+                    st.caption(f"Type: `{card_type}` | Mastery Level: {mastery}")
+                    
+                    st.markdown("### Question / Prompt")
+                    st.write(curr_card.get("front", ""))
+                    if curr_card.get("code_block"):
+                        st.code(curr_card.get("code_block"))
+
+                    if st.session_state.study_is_flipped:
+                        st.divider()
+                        st.markdown("### Answer / Explanation")
+                        st.write(curr_card.get("back", ""))
+                        if curr_card.get("explanation"):
+                            st.info(curr_card.get("explanation"))
+                        if curr_card.get("media_link"):
+                            render_media(curr_card.get("media_link"))
+
+                col_prev, col_flip, col_next = st.columns([1, 2, 1])
+
+                with col_prev:
+                    if st.button("⬅️ Previous", use_container_width=True, disabled=(curr_idx == 0)):
+                        st.session_state.study_card_index -= 1
+                        st.session_state.study_is_flipped = False
+                        st.rerun()
+
+                with col_flip:
+                    flip_label = "🙈 Hide Answer" if st.session_state.study_is_flipped else "🔄 Flip Card (Show Answer)"
+                    if st.button(flip_label, type="primary", use_container_width=True):
+                        st.session_state.study_is_flipped = not st.session_state.study_is_flipped
+                        st.rerun()
+
+                with col_next:
+                    if st.button("Next ➡️", use_container_width=True, disabled=(curr_idx == total_cards - 1)):
+                        st.session_state.study_card_index += 1
+                        st.session_state.study_is_flipped = False
+                        st.rerun()
+
+                # Self-Grading Section (Visible only when card is flipped)
+                if st.session_state.study_is_flipped:
+                    st.markdown("---")
+                    st.markdown("#### Rate Your Recall:")
+                    col_hard, col_med, col_easy = st.columns(3)
+
+                    def grade_and_advance(increment: int):
+                        updated_mastery = max(0, mastery + increment)
+                        updated_card = curr_card.copy()
+                        updated_card["mastery_level"] = updated_mastery
+                        
+                        update_single_card(
+                            folder_name=st.session_state.current_folder,
+                            deck_name=st.session_state.current_deck,
+                            updated_card=updated_card
+                        )
+                        
+                        # Advance to next card if available, reset flip state
+                        if st.session_state.study_card_index < total_cards - 1:
+                            st.session_state.study_card_index += 1
+                        st.session_state.study_is_flipped = False
+                        st.rerun()
+
+                    with col_hard:
+                        if st.button("🔴 Hard (+0)", use_container_width=True):
+                            grade_and_advance(0)
+
+                    with col_med:
+                        if st.button("🟡 Medium (+1)", use_container_width=True):
+                            grade_and_advance(1)
+
+                    with col_easy:
+                        if st.button("🟢 Easy (+2)", use_container_width=True):
+                            grade_and_advance(2)
 
     # VIEW 2: INDIVIDUAL FOLDER VIEW (List of Decks)
     elif st.session_state.current_folder is not None:
@@ -217,6 +319,8 @@ with tab_folders:
         for d in decks:
             if st.button(d, key=f"deck_btn_{d}"):
                 st.session_state.current_deck = d
+                st.session_state.study_card_index = 0
+                st.session_state.study_is_flipped = False
                 st.rerun()
 
     # VIEW 1: ALL FOLDERS VIEW
