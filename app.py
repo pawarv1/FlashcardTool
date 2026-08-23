@@ -55,8 +55,8 @@ def new_deck_popup():
 def new_card_popup():
     card_type = st.selectbox("Card Type", CARD_TYPES, index=0)
     front = st.text_area("Front (Question / Prompt)")
-    code_block = st.text_area("Code Block (Optional)", help="Paste any relevant code snippet here")
     back = st.text_area("Back (Answer / Summary)")
+    code_block = st.text_area("Code Block (Optional)", help="Paste any relevant code snippet here")
     explanation = st.text_area("Explanation (Optional)", help="Additional detail or context for review")
     media_link = st.text_input("Media Link / URL (Optional)", help="Paste image or reference URL")
 
@@ -65,8 +65,8 @@ def new_card_popup():
             card_data = {
                 "card_type": card_type,
                 "front": front.strip(),
-                "code_block": code_block.strip() if code_block.strip() else None,
                 "back": back.strip(),
+                "code_block": code_block.strip() if code_block.strip() else None,
                 "explanation": explanation.strip() if explanation.strip() else None,
                 "media_link": media_link.strip() if media_link.strip() else None,
                 "source_type": "manual_entry",
@@ -89,8 +89,8 @@ def edit_card_popup(card: dict):
 
     updated_type = st.selectbox("Card Type", CARD_TYPES, index=type_idx)
     updated_front = st.text_area("Front (Question / Prompt)", value=card.get("front", ""))
-    updated_code = st.text_area("Code Block (Optional)", value=card.get("code_block") or "")
     updated_back = st.text_area("Back (Answer / Summary)", value=card.get("back", ""))
+    updated_code = st.text_area("Code Block (Optional)", value=card.get("code_block") or "")
     updated_explanation = st.text_area("Explanation (Optional)", value=card.get("explanation") or "")
     updated_media = st.text_input("Media Link / URL (Optional)", value=card.get("media_link") or "")
 
@@ -105,8 +105,8 @@ def edit_card_popup(card: dict):
                     "card_id": card.get("card_id"),
                     "card_type": updated_type,
                     "front": updated_front.strip(),
-                    "code_block": updated_code.strip() if updated_code.strip() else None,
                     "back": updated_back.strip(),
+                    "code_block": updated_code.strip() if updated_code.strip() else None,
                     "explanation": updated_explanation.strip() if updated_explanation.strip() else None,
                     "media_link": updated_media.strip() if updated_media.strip() else None,
                     "source_type": card.get("source_type", "manual_entry"),

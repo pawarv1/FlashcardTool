@@ -2,20 +2,24 @@ import os
 import json
 import uuid
 from datetime import datetime
+from vector_utils import upsert_card_to_chroma, delete_card_from_chroma, sync_deck_to_chroma
 
 BASE_DECKS_DIR = "./decks"
 
 def ensure_deck_structure():
+    """Ensures the base decks directory exists."""
     if not os.path.exists(BASE_DECKS_DIR):
         os.makedirs(BASE_DECKS_DIR)
 
 def create_folder(folder_name: str):
+    """Creates a folder"""
     ensure_deck_structure()
     clean_folder_name = folder_name.strip().replace(" ", "_")
     folder_path = os.path.join(BASE_DECKS_DIR, clean_folder_name)
     os.makedirs(folder_path, exist_ok=True)
 
 def create_deck(folder_name: str, deck_name: str):
+    """Creates a deck"""
     ensure_deck_structure()
     clean_folder_name = folder_name.strip().replace(" ", "_")
     clean_deck_name = deck_name.strip().replace(" ", "_").lower()
@@ -37,6 +41,7 @@ def create_deck(folder_name: str, deck_name: str):
         json.dump(deck_content, f, indent=2)
 
 def save_card_to_json(folder_name: str, deck_name: str, card_data: dict):
+    """Saves or appends a card to a specific deck JSON file."""
     clean_folder_name = folder_name.strip().replace(" ", "_")
     clean_deck_name = deck_name.strip().replace(" ", "_").lower()
     file_path = os.path.join(BASE_DECKS_DIR, clean_folder_name, f"{clean_deck_name}.json")
@@ -62,11 +67,15 @@ def save_card_to_json(folder_name: str, deck_name: str, card_data: dict):
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(deck_content, f, indent=2)
 
+    upsert_card_to_chroma(folder_name, deck_name, full_card)
+
 def get_folders() -> list:
+    """Returns all folder names in the base directory"""
     ensure_deck_structure()
     return [f for f in os.listdir(BASE_DECKS_DIR) if os.path.isdir(os.path.join(BASE_DECKS_DIR, f))]
 
 def get_decks(folder_name: str) -> list:
+    """Returns all decks in the folder"""
     ensure_deck_structure()
     clean_folder_name = folder_name.strip().replace(" ", "_")
     folder_path = os.path.join(BASE_DECKS_DIR, clean_folder_name)
@@ -80,6 +89,7 @@ def get_decks(folder_name: str) -> list:
     ]
 
 def load_deck(folder_name: str, deck_name: str) -> dict:
+    """Loads a full deck JSON object from disk."""
     clean_folder_name = folder_name.strip().replace(" ", "_")
     clean_deck_name = deck_name.strip().replace(" ", "_").lower()
     file_path = os.path.join(BASE_DECKS_DIR, clean_folder_name, f"{clean_deck_name}.json")
@@ -90,21 +100,8 @@ def load_deck(folder_name: str, deck_name: str) -> dict:
         
     return {"deck_name": deck_name, "folder": folder_name, "cards": []}
 
-def update_deck_cards(folder_name: str, deck_name: str, updated_cards: list):
-    clean_folder_name = folder_name.strip().replace(" ", "_")
-    clean_deck_name = deck_name.strip().replace(" ", "_").lower()
-    file_path = os.path.join(BASE_DECKS_DIR, clean_folder_name, f"{clean_deck_name}.json")
-
-    if os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as f:
-            deck_content = json.load(f)
-
-        deck_content["cards"] = updated_cards
-
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(deck_content, f, indent = 2)
-
 def update_single_card(folder_name: str, deck_name: str, updated_card: dict):
+    """Updates a single card in a JSON deck by matching its card_id."""
     clean_folder_name = folder_name.strip().replace(" ", "_")
     clean_deck_name = deck_name.strip().replace(" ", "_").lower()
     file_path = os.path.join(BASE_DECKS_DIR, clean_folder_name, f"{clean_deck_name}.json")
@@ -124,7 +121,10 @@ def update_single_card(folder_name: str, deck_name: str, updated_card: dict):
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(deck_content, f, indent=2)
 
+        upsert_card_to_chroma(folder_name, deck_name, updated_card)
+
 def delete_single_card(folder_name: str, deck_name: str, card_id: str):
+    """Deletes a single card from a JSON deck by matching its card_id."""
     clean_folder_name = folder_name.strip().replace(" ", "_")
     clean_deck_name = deck_name.strip().replace(" ", "_").lower()
     file_path = os.path.join(BASE_DECKS_DIR, clean_folder_name, f"{clean_deck_name}.json")
@@ -140,3 +140,22 @@ def delete_single_card(folder_name: str, deck_name: str, card_id: str):
 
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(deck_content, f, indent=2)
+
+        delete_card_from_chroma(card_id)
+
+def update_deck_cards(folder_name: str, deck_name: str, updated_cards: list):
+    """Overwrites the cards array for a deck (used for edits, deletes, or reordering)."""
+    clean_folder_name = folder_name.strip().replace(" ", "_")
+    clean_deck_name = deck_name.strip().replace(" ", "_").lower()
+    file_path = os.path.join(BASE_DECKS_DIR, clean_folder_name, f"{clean_deck_name}.json")
+
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            deck_content = json.load(f)
+
+        deck_content["cards"] = updated_cards
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(deck_content, f, indent = 2)
+
+        sync_deck_to_chroma(folder_name, deck_name, updated_cards)
