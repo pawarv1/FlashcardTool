@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+from datetime import datetime
 
 BASE_DECKS_DIR = "./decks"
 
@@ -43,10 +44,20 @@ def save_card_to_json(folder_name: str, deck_name: str, card_data: dict):
     with open(file_path, "r", encoding="utf-8") as f:
         deck_content = json.load(f)
 
-    if "card_id" not in card_data or not card_data["card_id"]:
-        card_data["card_id"] = f"card_{uuid.uuid4().hex[:8]}"
+    full_card = {
+        "card_id": card_data.get("card_id") or f"card_{uuid.uuid4().hex[:8]}",
+        "card_type": card_data.get("card_type", "concept"),
+        "front": card_data.get("front", ""),
+        "code_block": card_data.get("code_block", None),
+        "back": card_data.get("back", ""),
+        "explanation": card_data.get("explanation", None),
+        "source_type": card_data.get("source_type", "manual_entry"),
+        "mastery_level": card_data.get("mastery_level", 0),
+        "media_url": card_data.get("media_url", None),
+        "created_at": card_data.get("created_at") or datetime.now().strftime("%Y-%m-%d")
+    }
 
-    deck_content["cards"].append(card_data)
+    deck_content["cards"].append(full_card)
 
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(deck_content, f, indent=2)

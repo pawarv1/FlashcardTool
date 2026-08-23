@@ -22,6 +22,18 @@ if "current_folder" not in st.session_state:
 if "current_deck" not in st.session_state:
     st.session_state.current_deck = None
 
+CARD_TYPES = ["concept", "code", "term", "problem"]
+
+# Helper to display media link as image if direct URL, or standard link
+def render_media(media_url: str):
+    if not media_url:
+        return
+    clean_url = media_url.lower()
+    if any(clean_url.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".gif", ".webp"]):
+        st.image(media_url, use_column_width=True)
+    else:
+        st.markdown(f"🔗 [View Attached Media]({media_url})")
+
 # 2. DIALOG POPUPS
 @st.dialog("New Folder")
 def new_folder_popup():
@@ -41,25 +53,46 @@ def new_deck_popup():
 
 @st.dialog("Add New Card")
 def new_card_popup():
+    card_type = st.selectbox("Card Type", CARD_TYPES, index=0)
     front = st.text_area("Front (Question / Prompt)")
-    back = st.text_area("Back (Answer / Explanation)")
+    code_block = st.text_area("Code Block (Optional)", help="Paste any relevant code snippet here")
+    back = st.text_area("Back (Answer / Summary)")
+    explanation = st.text_area("Explanation (Optional)", help="Additional detail or context for review")
+    media_link = st.text_input("Media Link / URL (Optional)", help="Paste image or reference URL")
 
-    if st.button("Save Card"):
+    if st.button("Save Card", type="primary"):
         if front.strip() and back.strip():
+            card_data = {
+                "card_type": card_type,
+                "front": front.strip(),
+                "code_block": code_block.strip() if code_block.strip() else None,
+                "back": back.strip(),
+                "explanation": explanation.strip() if explanation.strip() else None,
+                "media_link": media_link.strip() if media_link.strip() else None,
+                "source_type": "manual_entry",
+                "mastery_level": 0
+            }
             save_card_to_json(
                 folder_name=st.session_state.current_folder,
                 deck_name=st.session_state.current_deck,
-                card_data={"front": front.strip(), "back": back.strip()}
+                card_data=card_data
             )
             st.success("Card added.")
             st.rerun()
         else:
-            st.warning("Both front and back text are required.")
+            st.warning("Both Front and Back text are required.")
 
 @st.dialog("Edit Card")
 def edit_card_popup(card: dict):
+    curr_type = card.get("card_type", "concept")
+    type_idx = CARD_TYPES.index(curr_type) if curr_type in CARD_TYPES else 0
+
+    updated_type = st.selectbox("Card Type", CARD_TYPES, index=type_idx)
     updated_front = st.text_area("Front (Question / Prompt)", value=card.get("front", ""))
-    updated_back = st.text_area("Back (Answer / Explanation)", value=card.get("back", ""))
+    updated_code = st.text_area("Code Block (Optional)", value=card.get("code_block") or "")
+    updated_back = st.text_area("Back (Answer / Summary)", value=card.get("back", ""))
+    updated_explanation = st.text_area("Explanation (Optional)", value=card.get("explanation") or "")
+    updated_media = st.text_input("Media Link / URL (Optional)", value=card.get("media_link") or "")
 
     st.divider()
 
@@ -70,8 +103,14 @@ def edit_card_popup(card: dict):
             if updated_front.strip() and updated_back.strip():
                 updated_card = {
                     "card_id": card.get("card_id"),
+                    "card_type": updated_type,
                     "front": updated_front.strip(),
-                    "back": updated_back.strip()
+                    "code_block": updated_code.strip() if updated_code.strip() else None,
+                    "back": updated_back.strip(),
+                    "explanation": updated_explanation.strip() if updated_explanation.strip() else None,
+                    "media_link": updated_media.strip() if updated_media.strip() else None,
+                    "source_type": card.get("source_type", "manual_entry"),
+                    "mastery_level": card.get("mastery_level", 0)
                 }
                 update_single_card(
                     folder_name=st.session_state.current_folder,
@@ -80,10 +119,9 @@ def edit_card_popup(card: dict):
                 )
                 st.rerun()
             else:
-                st.warning("Both front and back text are required")
+                st.warning("Both Front and Back text are required.")
 
     with col_delete:
-        # Expander acts as an instant confirmation container without re-renders
         with st.expander("🗑️ Delete Card"):
             st.warning("Delete this card permanently?")
             if st.button("Yes, Delete", type="primary", use_container_width=True, key=f"del_confirm_{card.get('card_id')}"):
@@ -128,21 +166,31 @@ with tab_folders:
             else:
                 for idx, card in enumerate(cards, start=1):
                     card_id = card.get("card_id", f"card_{idx}")
+                    card_type = card.get("card_type", "concept").upper()
+                    mastery = card.get("mastery_level", 0)
+
                     with st.container(border=True):
                         col_card_header, col_edit_btn = st.columns([5, 1])
                         with col_card_header:
-                            st.markdown(f"**Card {idx}**")
+                            st.markdown(f"**Card {idx}** · `{card_type}` · *Mastery Level: {mastery}*")
                         with col_edit_btn:
                             if st.button("✏️ Edit", key=f"edit_{card_id}"):
                                 edit_card_popup(card)
                             
                         c_front, c_back = st.columns(2)
                         with c_front:
-                            st.markdown(f"**Front:**")
+                            st.markdown("**Front:**")
                             st.write(card.get("front", ""))
+                            if card.get("code_block"):
+                                st.code(card.get("code_block"))
+
                         with c_back:
                             st.markdown("**Back:**")
                             st.write(card.get("back", ""))
+                            if card.get("explanation"):
+                                st.caption(f"**Explanation:** {card.get('explanation')}")
+                            if card.get("media_link"):
+                                render_media(card.get("media_link"))
 
         # SUB-TAB 2: STUDY MODE (PLACEHOLDER FOR ACTIVE RECALL)
         with deck_tab_study:
