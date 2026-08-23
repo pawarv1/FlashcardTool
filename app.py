@@ -10,6 +10,10 @@ from storage_utils import (
     create_deck, 
     get_folders, 
     get_decks, 
+    rename_folder,
+    delete_folder,
+    rename_deck,
+    delete_deck,
     save_card_to_json, 
     load_deck, 
     update_single_card, 
@@ -57,12 +61,32 @@ def new_folder_popup():
             create_folder(new_folder_name.strip())
             st.rerun()
 
+@st.dialog("Rename Folder")
+def rename_folder_popup(folder_name: str):
+    new_name = st.text_input("New Folder Name", value=folder_name)
+    if st.button("Save Name", type="primary"):
+        if new_name.strip() and new_name.strip() != folder_name:
+            rename_folder(folder_name, new_name.strip())
+            if st.session_state.current_folder == folder_name:
+                st.session_state.current_folder = new_name.strip()
+            st.rerun()
+
 @st.dialog("New Deck")
 def new_deck_popup():
     new_deck_name = st.text_input("Enter New Deck Name")
     if st.button("Create"):
         if new_deck_name.strip():
             create_deck(st.session_state.current_folder, new_deck_name.strip())
+            st.rerun()
+
+@st.dialog("Rename Deck")
+def rename_deck_popup(deck_name: str):
+    new_name = st.text_input("New Deck Name", value=deck_name)
+    if st.button("Save Name", type="primary"):
+        if new_name.strip() and new_name.strip() != deck_name:
+            rename_deck(st.session_state.current_folder, deck_name, new_name.strip())
+            if st.session_state.current_deck == deck_name:
+                st.session_state.current_deck = new_name.strip()
             st.rerun()
 
 @st.dialog("Add New Card")
@@ -146,192 +170,241 @@ def edit_card_popup(card: dict):
                 )
                 st.rerun()
 
-tab_folders, tab_sets = st.tabs(["folders", "sets"])
-
 # 3. NAVIGATION LOGIC
-with tab_folders:
 
-    # VIEW 3: INDIVIDUAL DECK VIEW
-    if st.session_state.current_folder is not None and st.session_state.current_deck is not None:
+# VIEW 3: INDIVIDUAL DECK VIEW
+if st.session_state.current_folder is not None and st.session_state.current_deck is not None:
+    col_nav, col_actions = st.columns([3, 1])
+    with col_nav:
         if st.button(f"⬅️ Back to Folder: {st.session_state.current_folder}"):
             st.session_state.current_deck = None
             st.session_state.study_card_index = 0
             st.session_state.study_is_flipped = False
             st.rerun()
 
-        st.header(f"Deck: {st.session_state.current_deck}")
-        st.caption(f"Folder: {st.session_state.current_folder}")
-        st.divider()
+    with col_actions:
+        col_ren, col_del = st.columns(2)
+        with col_ren:
+            if st.button("✏️ Rename Deck", use_container_width=True):
+                rename_deck_popup(st.session_state.current_deck)
+        with col_del:
+            with st.popover("🗑️ Delete Deck", use_container_width=True):
+                st.warning("Delete this entire deck and all cards?")
+                if st.button("Yes, Delete Deck", type="primary", use_container_width=True):
+                    delete_deck(st.session_state.current_folder, st.session_state.current_deck)
+                    st.session_state.current_deck = None
+                    st.rerun()
 
-        # SUB-TABS INSIDE DECK VIEW
-        deck_tab_cards, deck_tab_study = st.tabs(["🎴 Cards", "📖 Study Mode"])
+    st.header(f"Deck: {st.session_state.current_deck}")
+    st.caption(f"Folder: {st.session_state.current_folder}")
+    st.divider()
 
-        deck_content = load_deck(st.session_state.current_folder, st.session_state.current_deck)
-        cards = deck_content.get("cards", [])
+    # SUB-TABS INSIDE DECK VIEW
+    deck_tab_cards, deck_tab_study = st.tabs(["🎴 Cards", "📖 Study Mode"])
 
-        # SUB-TAB 1: CARD LIST & MANAGEMENT
-        with deck_tab_cards:
-            col_title, col_btn = st.columns([4, 1])
-            with col_btn:
-                if st.button("➕ Add Card", use_container_width=True):
-                    new_card_popup()
+    deck_content = load_deck(st.session_state.current_folder, st.session_state.current_deck)
+    cards = deck_content.get("cards", [])
 
-            st.subheader(f"Cards ({len(cards)})")
+    # SUB-TAB 1: CARD LIST & MANAGEMENT
+    with deck_tab_cards:
+        col_title, col_btn = st.columns([4, 1])
+        with col_btn:
+            if st.button("➕ Add Card", use_container_width=True):
+                new_card_popup()
 
-            if not cards:
-                st.info("No cards in this deck yet. Click '➕ Add Card' above to create one.")
-            else:
-                for idx, card in enumerate(cards, start=1):
-                    card_id = card.get("card_id", f"card_{idx}")
-                    card_type = card.get("card_type", "concept").upper()
-                    mastery = card.get("mastery_level", 0)
+        st.subheader(f"Cards ({len(cards)})")
 
-                    with st.container(border=True):
-                        col_card_header, col_edit_btn = st.columns([5, 1])
-                        with col_card_header:
-                            st.markdown(f"**Card {idx}** · `{card_type}` · *Mastery Level: {mastery}*")
-                        with col_edit_btn:
-                            if st.button("✏️ Edit", key=f"edit_{card_id}"):
-                                edit_card_popup(card)
-                            
-                        c_front, c_back = st.columns(2)
-                        with c_front:
-                            st.markdown("**Front:**")
-                            st.write(card.get("front", ""))
-                            if card.get("code_block"):
-                                st.code(card.get("code_block"))
-
-                        with c_back:
-                            st.markdown("**Back:**")
-                            st.write(card.get("back", ""))
-                            if card.get("explanation"):
-                                st.caption(f"**Explanation:** {card.get('explanation')}")
-                            if card.get("media_link"):
-                                render_media(card.get("media_link"))
-
-        # SUB-TAB 2: INTERACTIVE STUDY MODE
-        with deck_tab_study:
-            if not cards:
-                st.info("Add cards to this deck to start studying!")
-            else:
-                total_cards = len(cards)
-                
-                if st.session_state.study_card_index >= total_cards:
-                    st.session_state.study_card_index = 0
-
-                curr_idx = st.session_state.study_card_index
-                curr_card = cards[curr_idx]
-
-                st.markdown(f"**Card {curr_idx + 1} of {total_cards}**")
-                st.progress((curr_idx + 1) / total_cards)
+        if not cards:
+            st.info("No cards in this deck yet. Click '➕ Add Card' above to create one.")
+        else:
+            for idx, card in enumerate(cards, start=1):
+                card_id = card.get("card_id", f"card_{idx}")
+                card_type = card.get("card_type", "concept").upper()
+                mastery = card.get("mastery_level", 0)
 
                 with st.container(border=True):
-                    card_type = curr_card.get("card_type", "concept").upper()
-                    mastery = curr_card.get("mastery_level", 0)
-                    st.caption(f"Type: `{card_type}` | Mastery Level: {mastery}")
-                    
-                    st.markdown("### Question / Prompt")
-                    st.write(curr_card.get("front", ""))
-                    if curr_card.get("code_block"):
-                        st.code(curr_card.get("code_block"))
+                    col_card_header, col_edit_btn = st.columns([5, 1])
+                    with col_card_header:
+                        st.markdown(f"**Card {idx}** · `{card_type}` · *Mastery Level: {mastery}*")
+                    with col_edit_btn:
+                        if st.button("✏️ Edit", key=f"edit_{card_id}"):
+                            edit_card_popup(card)
+                        
+                    c_front, c_back = st.columns(2)
+                    with c_front:
+                        st.markdown("**Front:**")
+                        st.write(card.get("front", ""))
+                        if card.get("code_block"):
+                            st.code(card.get("code_block"))
 
-                    if st.session_state.study_is_flipped:
-                        st.divider()
-                        st.markdown("### Answer / Explanation")
-                        st.write(curr_card.get("back", ""))
-                        if curr_card.get("explanation"):
-                            st.info(curr_card.get("explanation"))
-                        if curr_card.get("media_link"):
-                            render_media(curr_card.get("media_link"))
+                    with c_back:
+                        st.markdown("**Back:**")
+                        st.write(card.get("back", ""))
+                        if card.get("explanation"):
+                            st.caption(f"**Explanation:** {card.get('explanation')}")
+                        if card.get("media_link"):
+                            render_media(card.get("media_link"))
 
-                col_prev, col_flip, col_next = st.columns([1, 2, 1])
+    # SUB-TAB 2: INTERACTIVE STUDY MODE
+    with deck_tab_study:
+        if not cards:
+            st.info("Add cards to this deck to start studying!")
+        else:
+            total_cards = len(cards)
+            
+            if st.session_state.study_card_index >= total_cards:
+                st.session_state.study_card_index = 0
 
-                with col_prev:
-                    if st.button("⬅️ Previous", use_container_width=True, disabled=(curr_idx == 0)):
-                        st.session_state.study_card_index -= 1
-                        st.session_state.study_is_flipped = False
-                        st.rerun()
+            curr_idx = st.session_state.study_card_index
+            curr_card = cards[curr_idx]
 
-                with col_flip:
-                    flip_label = "🙈 Hide Answer" if st.session_state.study_is_flipped else "🔄 Flip Card (Show Answer)"
-                    if st.button(flip_label, type="primary", use_container_width=True):
-                        st.session_state.study_is_flipped = not st.session_state.study_is_flipped
-                        st.rerun()
+            st.markdown(f"**Card {curr_idx + 1} of {total_cards}**")
+            st.progress((curr_idx + 1) / total_cards)
 
-                with col_next:
-                    if st.button("Next ➡️", use_container_width=True, disabled=(curr_idx == total_cards - 1)):
-                        st.session_state.study_card_index += 1
-                        st.session_state.study_is_flipped = False
-                        st.rerun()
+            with st.container(border=True):
+                card_type = curr_card.get("card_type", "concept").upper()
+                mastery = curr_card.get("mastery_level", 0)
+                st.caption(f"Type: `{card_type}` | Mastery Level: {mastery}")
+                
+                st.markdown("### Question / Prompt")
+                st.write(curr_card.get("front", ""))
+                if curr_card.get("code_block"):
+                    st.code(curr_card.get("code_block"))
 
-                # Self-Grading Section (Visible only when card is flipped)
                 if st.session_state.study_is_flipped:
-                    st.markdown("---")
-                    st.markdown("#### Rate Your Recall:")
-                    col_hard, col_med, col_easy = st.columns(3)
+                    st.divider()
+                    st.markdown("### Answer / Explanation")
+                    st.write(curr_card.get("back", ""))
+                    if curr_card.get("explanation"):
+                        st.info(curr_card.get("explanation"))
+                    if curr_card.get("media_link"):
+                        render_media(curr_card.get("media_link"))
 
-                    def grade_and_advance(increment: int):
-                        updated_mastery = max(0, mastery + increment)
-                        updated_card = curr_card.copy()
-                        updated_card["mastery_level"] = updated_mastery
-                        
-                        update_single_card(
-                            folder_name=st.session_state.current_folder,
-                            deck_name=st.session_state.current_deck,
-                            updated_card=updated_card
-                        )
-                        
-                        # Advance to next card if available, reset flip state
-                        if st.session_state.study_card_index < total_cards - 1:
-                            st.session_state.study_card_index += 1
-                        st.session_state.study_is_flipped = False
-                        st.rerun()
+            # Control Bar
+            col_prev, col_flip, col_next = st.columns([1, 2, 1])
 
-                    with col_hard:
-                        if st.button("🔴 Hard (+0)", use_container_width=True):
-                            grade_and_advance(0)
+            with col_prev:
+                if st.button("⬅️ Previous", use_container_width=True, disabled=(curr_idx == 0)):
+                    st.session_state.study_card_index -= 1
+                    st.session_state.study_is_flipped = False
+                    st.rerun()
 
-                    with col_med:
-                        if st.button("🟡 Medium (+1)", use_container_width=True):
-                            grade_and_advance(1)
+            with col_flip:
+                flip_label = "🙈 Hide Answer" if st.session_state.study_is_flipped else "🔄 Flip Card (Show Answer)"
+                if st.button(flip_label, type="primary", use_container_width=True):
+                    st.session_state.study_is_flipped = not st.session_state.study_is_flipped
+                    st.rerun()
 
-                    with col_easy:
-                        if st.button("🟢 Easy (+2)", use_container_width=True):
-                            grade_and_advance(2)
+            with col_next:
+                if st.button("Next ➡️", use_container_width=True, disabled=(curr_idx == total_cards - 1)):
+                    st.session_state.study_card_index += 1
+                    st.session_state.study_is_flipped = False
+                    st.rerun()
 
-    # VIEW 2: INDIVIDUAL FOLDER VIEW (List of Decks)
-    elif st.session_state.current_folder is not None:
+            # Self-Grading Section
+            if st.session_state.study_is_flipped:
+                st.markdown("---")
+                st.markdown("#### Rate Your Recall:")
+                col_hard, col_med, col_easy = st.columns(3)
+
+                def grade_and_advance(increment: int):
+                    updated_mastery = max(0, mastery + increment)
+                    updated_card = curr_card.copy()
+                    updated_card["mastery_level"] = updated_mastery
+                    
+                    update_single_card(
+                        folder_name=st.session_state.current_folder,
+                        deck_name=st.session_state.current_deck,
+                        updated_card=updated_card
+                    )
+                    
+                    if st.session_state.study_card_index < total_cards - 1:
+                        st.session_state.study_card_index += 1
+                    st.session_state.study_is_flipped = False
+                    st.rerun()
+
+                with col_hard:
+                    if st.button("🔴 Hard (+0)", use_container_width=True):
+                        grade_and_advance(0)
+
+                with col_med:
+                    if st.button("🟡 Medium (+1)", use_container_width=True):
+                        grade_and_advance(1)
+
+                with col_easy:
+                    if st.button("🟢 Easy (+2)", use_container_width=True):
+                        grade_and_advance(2)
+
+# VIEW 2: INDIVIDUAL FOLDER VIEW (List of Decks)
+elif st.session_state.current_folder is not None:
+    col_header, col_f_actions = st.columns([3, 1])
+    with col_header:
         st.header(f"Folder: {st.session_state.current_folder}")
-        
-        if st.button("⬅️ Back to All Folders"):
-            st.session_state.current_folder = None
-            st.session_state.current_deck = None
-            st.rerun()
+    with col_f_actions:
+        col_f_ren, col_f_del = st.columns(2)
+        with col_f_ren:
+            if st.button("✏️ Rename", use_container_width=True):
+                rename_folder_popup(st.session_state.current_folder)
+        with col_f_del:
+            with st.popover("🗑️ Delete", use_container_width=True):
+                st.warning("Delete folder and all decks?")
+                if st.button("Yes, Delete Folder", type="primary", use_container_width=True):
+                    delete_folder(st.session_state.current_folder)
+                    st.session_state.current_folder = None
+                    st.session_state.current_deck = None
+                    st.rerun()
 
-        st.divider()
+    if st.button("⬅️ Back to All Folders"):
+        st.session_state.current_folder = None
+        st.session_state.current_deck = None
+        st.rerun()
 
-        if st.button("➕ Add New Deck"):
-            new_deck_popup()
+    st.divider()
 
-        st.subheader("Decks")
-        decks = get_decks(st.session_state.current_folder)
+    if st.button("➕ Add New Deck"):
+        new_deck_popup()
 
-        for d in decks:
-            if st.button(d, key=f"deck_btn_{d}"):
+    st.subheader("Decks")
+    decks = get_decks(st.session_state.current_folder)
+
+    for d in decks:
+        col_d_btn, col_d_ren, col_d_del = st.columns([4, 1, 1])
+        with col_d_btn:
+            if st.button(d, key=f"deck_btn_{d}", use_container_width=True):
                 st.session_state.current_deck = d
                 st.session_state.study_card_index = 0
                 st.session_state.study_is_flipped = False
                 st.rerun()
+        with col_d_ren:
+            if st.button("✏️", key=f"ren_deck_{d}"):
+                rename_deck_popup(d)
+        with col_d_del:
+            with st.popover("🗑️", key=f"del_deck_pop_{d}"):
+                st.warning(f"Delete deck '{d}'?")
+                if st.button("Confirm Delete", key=f"confirm_del_deck_{d}", type="primary"):
+                    delete_deck(st.session_state.current_folder, d)
+                    st.rerun()
 
-    # VIEW 1: ALL FOLDERS VIEW
-    else:
-        if st.button("➕ Add New Folder"):
-            new_folder_popup()
+# VIEW 1: ALL FOLDERS VIEW
+else:
+    if st.button("➕ Add New Folder"):
+        new_folder_popup()
 
-        st.subheader("All Folders")
-        folders = get_folders()
+    st.subheader("All Folders")
+    folders = get_folders()
 
-        for f in folders:
-            if st.button(f, key=f"folder_btn_{f}"):
+    for f in folders:
+        col_f_btn, col_f_ren, col_f_del = st.columns([4, 1, 1])
+        with col_f_btn:
+            if st.button(f, key=f"folder_btn_{f}", use_container_width=True):
                 st.session_state.current_folder = f
                 st.rerun()
+        with col_f_ren:
+            if st.button("✏️", key=f"ren_fold_{f}"):
+                rename_folder_popup(f)
+        with col_f_del:
+            with st.popover("🗑️", key=f"del_fold_pop_{f}"):
+                st.warning(f"Delete folder '{f}' and contents?")
+                if st.button("Confirm Delete", key=f"confirm_del_fold_{f}", type="primary"):
+                    delete_folder(f)
+                    st.rerun()

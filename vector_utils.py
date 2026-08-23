@@ -109,3 +109,73 @@ def query_relevant_cards(query_text: str, folder_name: str = None, deck_name: st
         where_filter = {"folder": folder_name.strip().replace(" ", "_")}
         
     return collection.query(query_texts=[query_text], n_results=n_results, where=where_filter)
+
+def delete_deck_from_chroma(folder_name: str, deck_name: str):
+    """Deletes all card vectors belonging to a specific deck."""
+    clean_folder = folder_name.strip().replace(" ", "_")
+    clean_deck = deck_name.strip().replace(" ", "_").lower()
+    collection = get_collection()
+    try:
+        collection.delete(
+            where={
+                "$and": [
+                    {"folder": clean_folder},
+                    {"deck": clean_deck}
+                ]
+            }
+        )
+    except Exception as e:
+        print(f"Warning: Could not delete deck {clean_deck} from ChromaDB: {e}")
+
+def delete_folder_from_chroma(folder_name: str):
+    """Deletes all card vectors belonging to an entire folder."""
+    clean_folder = folder_name.strip().replace(" ", "_")
+    collection = get_collection()
+    try:
+        collection.delete(where={"folder": clean_folder})
+    except Exception as e:
+        print(f"Warning: Could not delete folder {clean_folder} from ChromaDB: {e}")
+
+def rename_deck_in_chroma(folder_name: str, old_deck_name: str, new_deck_name: str):
+    """Updates metadata for all cards when a deck is renamed."""
+    clean_folder = folder_name.strip().replace(" ", "_")
+    clean_old_deck = old_deck_name.strip().replace(" ", "_").lower()
+    clean_new_deck = new_deck_name.strip().replace(" ", "_").lower()
+    
+    collection = get_collection()
+    try:
+        results = collection.get(
+            where={
+                "$and": [
+                    {"folder": clean_folder},
+                    {"deck": clean_old_deck}
+                ]
+            }
+        )
+        if results and results["ids"]:
+            updated_metadatas = []
+            for meta in results["metadatas"]:
+                meta["deck"] = clean_new_deck
+                updated_metadatas.append(meta)
+
+            collection.update(ids=results["ids"], metadatas=updated_metadatas)
+    except Exception as e:
+        print(f"Warning: Could not update deck metadata in ChromaDB: {e}")
+
+def rename_folder_in_chroma(old_folder_name: str, new_folder_name: str):
+    """Updates metadata for all cards when a folder is renamed."""
+    clean_old_folder = old_folder_name.strip().replace(" ", "_")
+    clean_new_folder = new_folder_name.strip().replace(" ", "_")
+    
+    collection = get_collection()
+    try:
+        results = collection.get(where={"folder": clean_old_folder})
+        if results and results["ids"]:
+            updated_metadatas = []
+            for meta in results["metadatas"]:
+                meta["folder"] = clean_new_folder
+                updated_metadatas.append(meta)
+
+            collection.update(ids=results["ids"], metadatas=updated_metadatas)
+    except Exception as e:
+        print(f"Warning: Could not update folder metadata in ChromaDB: {e}")

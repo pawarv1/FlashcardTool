@@ -1,8 +1,17 @@
 import os
 import json
 import uuid
+import shutil
 from datetime import datetime
-from vector_utils import upsert_card_to_chroma, delete_card_from_chroma, sync_deck_to_chroma
+from vector_utils import (
+    upsert_card_to_chroma,
+    delete_card_from_chroma,
+    sync_deck_to_chroma,
+    delete_deck_from_chroma,
+    delete_folder_from_chroma,
+    rename_deck_in_chroma,
+    rename_folder_in_chroma
+)
 
 BASE_DECKS_DIR = "./decks"
 
@@ -159,3 +168,74 @@ def update_deck_cards(folder_name: str, deck_name: str, updated_cards: list):
             json.dump(deck_content, f, indent = 2)
 
         sync_deck_to_chroma(folder_name, deck_name, updated_cards)
+
+def delete_deck(folder_name: str, deck_name: str):
+    """Deletes a deck file from disk and removes its vectors from ChromaDB."""
+    clean_folder = folder_name.strip().replace(" ", "_")
+    clean_deck = deck_name.strip().replace(" ", "_").lower()
+    file_path = os.path.join(BASE_DECKS_DIR, clean_folder, f"{clean_deck}.json")
+
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+    delete_deck_from_chroma(folder_name, deck_name)
+
+def delete_folder(folder_name: str):
+    """Deletes an entire folder directory and removes its vectors from ChromaDB."""
+    clean_folder = folder_name.strip().replace(" ", "_")
+    folder_path = os.path.join(BASE_DECKS_DIR, clean_folder)
+
+    if os.path.exists(folder_path):
+        shutil.rmtree(folder_path)
+
+    delete_folder_from_chroma(folder_name)
+
+def rename_deck(folder_name: str, old_deck_name: str, new_deck_name: str):
+    """Renames a deck JSON file and updates ChromaDB metadata."""
+    clean_folder = folder_name.strip().replace(" ", "_")
+    clean_old_deck = old_deck_name.strip().replace(" ", "_").lower()
+    clean_new_deck = new_deck_name.strip().replace(" ", "_").lower()
+
+    old_file_path = os.path.join(BASE_DECKS_DIR, clean_folder, f"{clean_old_deck}.json")
+    new_file_path = os.path.join(BASE_DECKS_DIR, clean_folder, f"{clean_new_deck}.json")
+
+    if not os.path.exists(old_file_path):
+        return
+
+    with open(old_file_path, "r", encoding="utf-8") as f:
+        deck_content = json.load(f)
+
+    deck_content["deck_name"] = new_deck_name
+
+    with open(new_file_path, "w", encoding="utf-8") as f:
+        json.dump(deck_content, f, indent=2)
+
+    os.remove(old_file_path)
+
+    rename_deck_in_chroma(folder_name, old_deck_name, new_deck_name)
+
+def rename_folder(old_folder_name: str, new_folder_name: str):
+    """Renames a folder directory and updates internal JSON and ChromaDB metadata."""
+    clean_old_folder = old_folder_name.strip().replace(" ", "_")
+    clean_new_folder = new_folder_name.strip().replace(" ", "_")
+
+    old_folder_path = os.path.join(BASE_DECKS_DIR, clean_old_folder)
+    new_folder_path = os.path.join(BASE_DECKS_DIR, clean_new_folder)
+
+    if not os.path.exists(old_folder_path):
+        return
+
+    os.rename(old_folder_path, new_folder_path)
+
+    for file_name in os.listdir(new_folder_path):
+        if file_name.endswith(".json"):
+            file_path = os.path.join(new_folder_path, file_name)
+            with open(file_path, "r", encoding="utf-8") as f:
+                deck_content = json.load(f)
+
+            deck_content["folder"] = new_folder_name
+
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(deck_content, f, indent=2)
+
+    rename_folder_in_chroma(old_folder_name, new_folder_name)
