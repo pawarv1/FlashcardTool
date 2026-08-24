@@ -1,10 +1,8 @@
-import os
-import random
+from typing import get_args
 import streamlit as st
-from langchain_core.messages import HumanMessage, AIMessage
-from ingest import ingest_document
-from agent import agent_graph, CHROMA_COLLECTION
-from quiz_engine import generate_quiz_question, grade_user_answer
+from document_parser import get_markdown_chunks
+from card_generator import generate_flashcards_from_chunks, CardTypeEnum
+from vector_utils import check_candidate_duplicates
 from storage_utils import (
     create_folder, 
     create_deck, 
@@ -17,8 +15,10 @@ from storage_utils import (
     save_card_to_json, 
     load_deck, 
     update_single_card, 
-    delete_single_card
+    delete_single_card,
 )
+
+CARD_TYPES = get_args(CardTypeEnum) if get_args(CardTypeEnum) else ["concept", "code_snippet", "definition", "formula", "comparison", "example"]
 
 # 1. PAGE CONFIG
 st.set_page_config(
@@ -41,8 +41,6 @@ if "study_card_index" not in st.session_state:
 if "study_is_flipped" not in st.session_state:
     st.session_state.study_is_flipped = False
 
-CARD_TYPES = ["concept", "code", "term", "problem"]
-
 def render_media(media_url: str):
     if not media_url:
         return
@@ -52,7 +50,7 @@ def render_media(media_url: str):
     else:
         st.markdown(f"🔗 [View Attached Media]({media_url})")
 
-# 2. DIALOG POPUPS
+# 2. DIALOG POPUPS (Folders & Decks)
 @st.dialog("New Folder")
 def new_folder_popup():
     new_folder_name = st.text_input("Enter New Folder Name")
@@ -170,7 +168,100 @@ def edit_card_popup(card: dict):
                 )
                 st.rerun()
 
-# 3. NAVIGATION LOGIC
+# 3. DOCUMENT INGESTION & AI DRAFTING DIALOG
+@st.dialog("📄 Ingest Document & Generate Cards", width="large")
+def ingest_document_popup():
+    uploaded_file = st.file_uploader(
+        "Upload Study Document", 
+        type=["pdf", "docx", "pptx", "txt", "md", "csv", "html"]
+    )
+    instructions = st.text_input(
+        "Focus Directive (Optional)", 
+        placeholder="e.g. Focus on search algorithms and time complexity"
+    )
+    num_cards = st.slider("Target Number of Cards", min_value=3, max_value=20, value=8)
+
+    if "draft_cards" not in st.session_state:
+        st.session_state.draft_cards = None
+
+    if st.button("⚙️ Parse & Generate Drafts", type="primary", disabled=not uploaded_file):
+        with st.spinner("Parsing document and drafting flashcards via Llama 3.1..."):
+            # 1. Parse & Chunk Document via MarkItDown
+            document_chunks = get_markdown_chunks(uploaded_file)
+            
+            # 2. AI Card Generation via llama3.1 & Pydantic structuring
+            raw_drafts = generate_flashcards_from_chunks(
+                document_chunks=document_chunks, 
+                user_instructions=instructions, 
+                target_count=num_cards
+            )
+            
+            # 3. Duplicate Detection against ChromaDB
+            flagged_drafts = check_candidate_duplicates(
+                candidate_cards=raw_drafts,
+                folder_name=st.session_state.current_folder,
+                deck_name=st.session_state.current_deck
+            )
+            st.session_state.draft_cards = flagged_drafts
+            print(flagged_drafts)
+
+    # DRAFTING TABLE (HUMAN-IN-THE-LOOP REVIEW)
+    if st.session_state.draft_cards:
+        st.divider()
+        st.subheader("📋 Drafting Table (Review & Edit)")
+        
+        selected_indices = []
+        edited_drafts = []
+
+        for i, card in enumerate(st.session_state.draft_cards):
+            is_dup = card.get("is_duplicate", False)
+            matched_q = card.get("matched_existing_front", "")
+
+            with st.expander(f"Card {i+1}: {card.get('front', '')[:50]}...", expanded=not is_dup):
+                if is_dup:
+                    st.warning(f"⚠️ Potential Duplicate of: *\"{matched_q}\"*")
+
+                col_check, col_content = st.columns([1, 10])
+                with col_check:
+                    should_import = st.checkbox("Import", value=not is_dup, key=f"import_chk_{i}")
+                    if should_import:
+                        selected_indices.append(i)
+
+                with col_content:
+                    c_front = st.text_area("Front", value=card.get("front", ""), key=f"draft_f_{i}")
+                    c_back = st.text_area("Back", value=card.get("back", ""), key=f"draft_b_{i}")
+                    
+                    curr_c_type = card.get("card_type", "concept")
+                    type_c_idx = CARD_TYPES.index(curr_c_type) if curr_c_type in CARD_TYPES else 0
+                    c_type = st.selectbox("Type", CARD_TYPES, index=type_c_idx, key=f"draft_t_{i}")
+                    
+                    c_code = st.text_area("Code Block", value=card.get("code_block") or "", key=f"draft_c_{i}")
+                    c_exp = st.text_area("Explanation", value=card.get("explanation") or "", key=f"draft_e_{i}")
+
+                    edited_drafts.append({
+                        "card_type": c_type,
+                        "front": c_front.strip(),
+                        "back": c_back.strip(),
+                        "code_block": c_code.strip() if c_code.strip() else None,
+                        "explanation": c_exp.strip() if c_exp.strip() else None,
+                        "media_link": None,
+                        "source_type": f"doc_ingest:{uploaded_file.name if uploaded_file else 'file'}",
+                        "mastery_level": 0
+                    })
+
+        st.divider()
+        if st.button(f"💾 Save {len(selected_indices)} Selected Cards", type="primary", use_container_width=True):
+            for idx in selected_indices:
+                save_card_to_json(
+                    folder_name=st.session_state.current_folder,
+                    deck_name=st.session_state.current_deck,
+                    card_data=edited_drafts[idx]
+                )
+            st.session_state.draft_cards = None
+            st.success(f"Successfully imported {len(selected_indices)} cards!")
+            st.rerun()
+
+# 4. NAVIGATION LOGIC
 
 # VIEW 3: INDIVIDUAL DECK VIEW
 if st.session_state.current_folder is not None and st.session_state.current_deck is not None:
@@ -207,15 +298,19 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
 
     # SUB-TAB 1: CARD LIST & MANAGEMENT
     with deck_tab_cards:
-        col_title, col_btn = st.columns([4, 1])
-        with col_btn:
+        col_title, col_btn1, col_btn2 = st.columns([3, 1.5, 1])
+        with col_btn1:
+            if st.button("📄 Ingest Document", use_container_width=True, type="primary"):
+                st.session_state.draft_cards = None
+                ingest_document_popup()
+        with col_btn2:
             if st.button("➕ Add Card", use_container_width=True):
                 new_card_popup()
 
         st.subheader(f"Cards ({len(cards)})")
 
         if not cards:
-            st.info("No cards in this deck yet. Click '➕ Add Card' above to create one.")
+            st.info("No cards in this deck yet. Click '➕ Add Card' or '📄 Ingest Document' above to add some.")
         else:
             for idx, card in enumerate(cards, start=1):
                 card_id = card.get("card_id", f"card_{idx}")
@@ -280,7 +375,6 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                     if curr_card.get("media_link"):
                         render_media(curr_card.get("media_link"))
 
-            # Control Bar
             col_prev, col_flip, col_next = st.columns([1, 2, 1])
 
             with col_prev:

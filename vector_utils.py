@@ -72,7 +72,7 @@ def sync_deck_to_chroma(folder_name: str, deck_name: str, cards: list):
             }
         )
     except Exception:
-        pass  # Deck might not have had vectors yet
+        pass
     
     # 2. Batch upsert remaining active cards
     if not cards:
@@ -179,3 +179,50 @@ def rename_folder_in_chroma(old_folder_name: str, new_folder_name: str):
             collection.update(ids=results["ids"], metadatas=updated_metadatas)
     except Exception as e:
         print(f"Warning: Could not update folder metadata in ChromaDB: {e}")
+
+def check_candidate_duplicates(candidate_cards: list, folder_name: str = None, deck_name: str = None, distance_threshold: float = 0.35) -> list:
+    """
+    Checks proposed AI candidate cards against ChromaDB.
+    Attaches 'is_duplicate' flag and 'matched_existing_front' text to candidate dicts.
+    """
+    collection = get_collection()
+    
+    if collection.count() == 0:
+        for card in candidate_cards:
+            card["is_duplicate"] = False
+            card["matched_existing_front"] = None
+        return candidate_cards
+
+    where_filter = None
+    if folder_name and deck_name:
+        where_filter = {
+            "$and": [
+                {"folder": folder_name.strip().replace(" ", "_")},
+                {"deck": deck_name.strip().replace(" ", "_").lower()}
+            ]
+        }
+    elif folder_name:
+        where_filter = {"folder": folder_name.strip().replace(" ", "_")}
+
+    for card in candidate_cards:
+        results = collection.query(
+            query_texts=[card["front"]],
+            n_results=1,
+            where=where_filter
+        )
+
+        is_duplicate = False
+        matched_text = None
+
+        if results and results["distances"] and len(results["distances"][0]) > 0:
+            top_distance = results["distances"][0][0]
+            
+            if top_distance < distance_threshold:
+                is_duplicate = True
+                # Extract the matched text document from ChromaDB results
+                matched_text = results["documents"][0][0]
+
+        card["is_duplicate"] = is_duplicate
+        card["matched_existing_front"] = matched_text
+
+    return candidate_cards
