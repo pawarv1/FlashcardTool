@@ -1,3 +1,5 @@
+import os
+import random
 from typing import get_args
 import streamlit as st
 from document_parser import get_markdown_chunks
@@ -17,6 +19,7 @@ from storage_utils import (
     update_single_card, 
     delete_single_card,
 )
+from anki_utils import generate_anki_deck_bytes
 
 CARD_TYPES = get_args(CardTypeEnum) if get_args(CardTypeEnum) else ["concept", "code_snippet", "definition", "formula", "comparison", "example"]
 
@@ -297,7 +300,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
 
     # SUB-TAB 1: CARD LIST & MANAGEMENT
     with deck_tab_cards:
-        col_title, col_btn1, col_btn2 = st.columns([3, 1.5, 1])
+        col_title, col_btn1, col_btn2, col_btn3 = st.columns([2.5, 1.3, 1, 1.2])
         with col_btn1:
             if st.button("📄 Ingest Document", use_container_width=True, type="primary"):
                 st.session_state.draft_cards = None
@@ -305,6 +308,25 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
         with col_btn2:
             if st.button("➕ Add Card", use_container_width=True):
                 new_card_popup()
+        with col_btn3:
+            if not cards:
+                st.button("📦 Export to Anki", use_container_width=True, disabled=True, help="Add cards before exporting.")
+            else:
+                try:
+                    anki_bytes = generate_anki_deck_bytes(
+                        folder_name=st.session_state.current_folder,
+                        deck_name=st.session_state.current_deck
+                    )
+                    clean_deck_filename = st.session_state.current_deck.strip().replace(" ", "_").lower()
+                    st.download_button(
+                        label="📦 Export to Anki",
+                        data=anki_bytes,
+                        file_name=f"{clean_deck_filename}.apkg",
+                        mime="application/octet-stream",
+                        use_container_width=True
+                    )
+                except Exception as e:
+                    st.error(f"Error generating Anki package: {e}")
 
         st.subheader(f"Cards ({len(cards)})")
 
@@ -374,6 +396,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                     if curr_card.get("media_link"):
                         render_media(curr_card.get("media_link"))
 
+            # Control Bar
             col_prev, col_flip, col_next = st.columns([1, 2, 1])
 
             with col_prev:
