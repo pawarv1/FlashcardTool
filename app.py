@@ -22,6 +22,7 @@ from storage_utils import (
 )
 from anki_utils import generate_anki_deck_bytes
 from agent import agent_graph
+from quiz_engine import generate_quiz_question, grade_user_answer
 
 CARD_TYPES = get_args(CardTypeEnum) if get_args(CardTypeEnum) else ["concept", "code_snippet", "definition", "formula", "comparison", "example"]
 
@@ -294,7 +295,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
     st.caption(f"Folder: {st.session_state.current_folder}")
     st.divider()
 
-    deck_tab_cards, deck_tab_study, deck_tab_chat = st.tabs(["🎴 Cards", "📖 Study Mode", "💬 Chat Assistant"])
+    deck_tab_cards, deck_tab_study, deck_tab_chat, deck_tab_quiz = st.tabs(["🎴 Cards", "📖 Study Mode", "💬 Chat Assistant", "📝 AI Quiz"])
 
     deck_content = load_deck(st.session_state.current_folder, st.session_state.current_deck)
     cards = deck_content.get("cards", [])
@@ -397,7 +398,6 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                     if curr_card.get("media_link"):
                         render_media(curr_card.get("media_link"))
 
-            # Control Bar
             col_prev, col_flip, col_next = st.columns([1, 2, 1])
 
             with col_prev:
@@ -475,14 +475,12 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
 
         # Handle user prompt input
         if prompt := st.chat_input("Ask a question about this deck..."):
-            # Append user query to UI state and display
             user_msg = HumanMessage(content=prompt)
             st.session_state[chat_key].append(user_msg)
             
             with st.chat_message("user"):
                 st.write(prompt)
 
-            # Invoke Agentic Graph with current deck scope
             with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
                     graph_input = {
@@ -498,6 +496,86 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                         final_response = assistant_messages[-1]
                         st.write(final_response.content)
                         st.session_state[chat_key].append(final_response)
+
+    # SUB-TAB 4: AI QUIZ ENGINE
+    with deck_tab_quiz:
+        st.subheader("📝 Active Recall Quiz Generator")
+        
+        quiz_key = f"quiz_data_{st.session_state.current_folder}_{st.session_state.current_deck}"
+        grade_key = f"quiz_grade_{st.session_state.current_folder}_{st.session_state.current_deck}"
+
+        if quiz_key not in st.session_state:
+            st.session_state[quiz_key] = None
+        if grade_key not in st.session_state:
+            st.session_state[grade_key] = None
+
+        col_q_focus, col_q_gen = st.columns([3, 1])
+        with col_q_focus:
+            quiz_focus = st.text_input(
+                "Focus Topic (Optional)", 
+                placeholder="e.g. Focus on encapsulation or Big-O analysis",
+                key="quiz_focus_input"
+            )
+        with col_q_gen:
+            st.write(" ")
+            if st.button("🎲 Generate New Quiz", type="primary", use_container_width=True):
+                with st.spinner("Retrieving card and generating short-answer quiz..."):
+                    q_data = generate_quiz_question(
+                        folder_name=st.session_state.current_folder,
+                        deck_name=st.session_state.current_deck,
+                        user_focus=quiz_focus
+                    )
+                    st.session_state[quiz_key] = q_data
+                    st.session_state[grade_key] = None
+                    st.rerun()
+
+        st.divider()
+
+        current_quiz = st.session_state[quiz_key]
+        if not current_quiz:
+            st.info("Click '🎲 Generate New Quiz' above to start a short-answer active recall test.")
+        else:
+            with st.container(border=True):
+                st.markdown("### Question")
+                st.write(current_quiz.get("question", ""))
+                
+                source_meta = current_quiz.get("source_meta", {})
+                if source_meta.get("card_type"):
+                    st.caption(f"Based on Card Type: `{source_meta.get('card_type')}`")
+
+            user_quiz_answer = st.text_area("Your Answer", height=120, key=f"quiz_ans_input_{current_quiz.get('question')[:15]}")
+
+            col_sub, col_reset = st.columns([1, 1])
+            with col_sub:
+                if st.button("Submit Answer", type="primary", use_container_width=True, disabled=not user_quiz_answer.strip()):
+                    with st.spinner("Grading answer against reference material via Llama 3.1..."):
+                        evaluation = grade_user_answer(
+                            question=current_quiz.get("question", ""),
+                            reference_context=current_quiz.get("reference_context", ""),
+                            user_answer=user_quiz_answer.strip()
+                        )
+                        st.session_state[grade_key] = evaluation
+                        st.rerun()
+
+            # Render Evaluation Results
+            current_grade = st.session_state[grade_key]
+            if current_grade:
+                st.divider()
+                st.markdown("### Evaluation & Feedback")
+                
+                score_str = current_grade.get("score", "Needs Review")
+                grade_pct = current_grade.get("grade_percent", 0)
+                feedback = current_grade.get("feedback", "")
+
+                if score_str == "Pass":
+                    st.success(f"**Score:** {score_str} ({grade_pct}%)")
+                else:
+                    st.warning(f"**Score:** {score_str} ({grade_pct}%)")
+
+                st.markdown(f"**Feedback:** {feedback}")
+                
+                with st.expander("📖 View Reference Context"):
+                    st.write(current_quiz.get("reference_context", ""))
 
 # VIEW 2: INDIVIDUAL FOLDER VIEW (List of Decks)
 elif st.session_state.current_folder is not None:

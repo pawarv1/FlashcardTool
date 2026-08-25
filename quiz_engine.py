@@ -1,21 +1,53 @@
-import json
 import random
-from agent import llm, EMBEDDER, CHROMA_COLLECTION
+from typing import Optional, Literal
+from pydantic import BaseModel, Field
+from langchain_ollama import ChatOllama
+from vector_utils import get_collection
 
-def generate_quiz_question(subject_name: str, user_focus: str = "") -> dict:    
-    where_filter = {"subject": subject_name.strip().title()} if subject_name != "All Subjects" else None
+# Structured outputs using Pydantic
+class QuizQuestionSchema(BaseModel):
+    question: str = Field(description="Conceptual or technical short-answer quiz question based on the card front/back.")
+    reference_context: str = Field(description="Summary or direct quote from the card containing the correct answer.")
 
+class QuizGradeSchema(BaseModel):
+    score: Literal["Pass", "Needs Review"] = Field(description="Pass if conceptually accurate, Needs Review otherwise.")
+    grade_percent: int = Field(description="Numeric score from 0 to 100 based on answer accuracy.")
+    feedback: str = Field(description="1-2 sentences of encouraging, constructive feedback explaining the score.")
+
+# Instantiate LLM
+llm = ChatOllama(model="llama3.1", temperature=0.2)
+question_generator_llm = llm.with_structured_output(QuizQuestionSchema)
+grader_llm = llm.with_structured_output(QuizGradeSchema)
+
+def generate_quiz_question(folder_name: Optional[str] = None, deck_name: Optional[str] = None, user_focus: str = "") -> Optional[dict]:
+    """Retrieves a card from ChromaDB and generates a tailored short-answer quiz question."""
+    collection = get_collection()
+    
+    clean_folder = folder_name.strip().replace(" ", "_") if folder_name else None
+    clean_deck = deck_name.strip().replace(" ", "_").lower() if deck_name else None
+
+    where_filter = None
+    if clean_folder and clean_deck:
+        where_filter = {
+            "$and": [
+                {"folder": clean_folder},
+                {"deck": clean_deck}
+            ]
+        }
+    elif clean_folder:
+        where_filter = {"folder": clean_folder}
+
+    # Fetch candidate cards via vector search or random sampling
     if user_focus.strip():
-        query_vec = EMBEDDER.encode(user_focus).tolist()
-        results = CHROMA_COLLECTION.query(
-            query_embeddings=[query_vec],
+        results = collection.query(
+            query_texts=[user_focus.strip()],
             where=where_filter,
             n_results=3
         )
         docs = results.get("documents", [[]])[0]
         metas = results.get("metadatas", [[]])[0]
     else:
-        results = CHROMA_COLLECTION.get(where=where_filter, limit=20)
+        results = collection.get(where=where_filter, limit=30)
         docs = results.get("documents", [])
         metas = results.get("metadatas", [])
 
@@ -26,50 +58,45 @@ def generate_quiz_question(subject_name: str, user_focus: str = "") -> dict:
     selected_doc = docs[idx]
     selected_meta = metas[idx]
 
-    focus_directive = f"The student explicitly requested to be tested on: '{user_focus.strip()}'." if user_focus.strip() else ""
+    focus_directive = f"The student explicitly requested to focus on: '{user_focus.strip()}'." if user_focus.strip() else ""
 
-    prompt = f"""
-    You are an expert computer science professor writing a quiz question.
-    Based on the following study note, write 1 conceptual or technical quiz question to test the student's memory.
-    {focus_directive}
+    prompt = (
+        "You are an expert computer science professor writing an active-recall quiz question.\n"
+        "Based on the following flashcard document and metadata, write 1 short-answer quiz question to test the student's understanding.\n\n"
+        f"{focus_directive}\n\n"
+        f"FLASHCARD FRONT: {selected_meta.get('front', selected_doc)}\n"
+        f"FLASHCARD BACK: {selected_meta.get('back', '')}\n"
+        f"CARD TYPE: {selected_meta.get('card_type', 'concept')}"
+    )
 
-    STRICT REQUIREMENT: Return valid JSON ONLY with no markdown formatting:
-    {{
-      "question": "Your question here...",
-      "reference_context": "Direct quote or key summary from the note containing the answer"
-    }}
-
-    STUDY NOTE:
-    {selected_doc}
-    """
-    
-    response = llm.invoke(prompt)
-    raw_json = response.content.strip().replace("```json", "").replace("```", "").strip()
-    
-    quiz_data = json.loads(raw_json)
-    quiz_data["source_meta"] = selected_meta
-    return quiz_data
+    try:
+        response: QuizQuestionSchema = question_generator_llm.invoke(prompt)
+        quiz_data = response.model_dump()
+        quiz_data["source_meta"] = selected_meta
+        return quiz_data
+    except Exception as e:
+        print(f"Error generating quiz question: {e}")
+        return None
 
 def grade_user_answer(question: str, reference_context: str, user_answer: str) -> dict:
-    prompt = f"""
-    You are an encouraging and fair computer science professor grading a short-answer quiz.
+    """Grades student short-answer input against the reference flashcard context."""
+    prompt = (
+        "You are an encouraging and fair computer science professor grading a short-answer quiz.\n\n"
+        f"QUESTION: {question}\n"
+        f"REFERENCE CONTEXT: {reference_context}\n"
+        f"STUDENT ANSWER: {user_answer}\n\n"
+        "GRADING RULES:\n"
+        "1. Focus on CORE CONCEPTUAL ACCURACY. Reward full points if the core term or concept is correctly explained.\n"
+        "2. Do NOT dock points for omitting optional syntax or minor extra details unless explicitly asked by the question."
+    )
 
-    QUESTION: {question}
-    REFERENCE CONTEXT FROM NOTES: {reference_context}
-    STUDENT ANSWER: {user_answer}
-
-    GRADING RULES:
-    1. Focus on CORE CONCEPTUAL ACCURACY. If the student correctly names or explains the primary term/concept asked in the question, reward them full points.
-    2. Do NOT dock points if the student omitted optional programming language examples, extra metadata, or minor details present in the reference text UNLESS the question explicitly requested them.
-
-    STRICT REQUIREMENT: Return valid JSON ONLY with no markdown formatting:
-    {{
-      "score": "Pass" or "Needs Review",
-      "grade_percent": 85,
-      "feedback": "1-2 sentences explaining what was correct or providing constructive feedback."
-    }}
-    """
-    
-    response = llm.invoke(prompt)
-    raw_json = response.content.strip().replace("```json", "").replace("```", "").strip()
-    return json.loads(raw_json)
+    try:
+        response: QuizGradeSchema = grader_llm.invoke(prompt)
+        return response.model_dump()
+    except Exception as e:
+        print(f"Error grading quiz answer: {e}")
+        return {
+            "score": "Needs Review",
+            "grade_percent": 0,
+            "feedback": "An error occurred while evaluating your answer."
+        }
