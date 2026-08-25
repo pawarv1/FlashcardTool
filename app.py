@@ -203,7 +203,6 @@ def ingest_document_popup():
                 deck_name=st.session_state.current_deck
             )
             st.session_state.draft_cards = flagged_drafts
-            print(flagged_drafts)
 
     # DRAFTING TABLE (HUMAN-IN-THE-LOOP REVIEW)
     if st.session_state.draft_cards:

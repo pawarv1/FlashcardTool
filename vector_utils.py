@@ -5,7 +5,6 @@ CHROMA_DATA_PATH = "./chroma_db_data"
 COLLECTION_NAME = "study_assistant"
 
 client = chromadb.PersistentClient(path=CHROMA_DATA_PATH)
-
 embedding_fn = embedding_functions.DefaultEmbeddingFunction()
 
 def get_collection():
@@ -15,36 +14,24 @@ def get_collection():
         embedding_function=embedding_fn
     )
 
-def format_card_text(card_data: dict) -> str:
-    """Formats a card object into a clean text document for vector embedding."""
-    parts = [f"[Front]: {card_data.get('front', '')}"]
-    
-    if card_data.get("code_block"):
-        parts.append(f"[Code]: {card_data['code_block']}")
-        
-    parts.append(f"[Back]: {card_data.get('back', '')}")
-    
-    if card_data.get("explanation"):
-        parts.append(f"[Explanation]: {card_data['explanation']}")
-        
-    return "\n".join(parts)
-
 def upsert_card_to_chroma(folder_name: str, deck_name: str, card_data: dict):
-    """Adds or updates a card embedding in ChromaDB."""
+    """Adds or updates a card embedding in ChromaDB using only the front text."""
     collection = get_collection()
     
     card_id = card_data["card_id"]
-    document_text = format_card_text(card_data)
+    front_text = card_data.get("front", "").strip()
     
     metadata = {
         "card_id": card_id,
+        "front": front_text,
+        "back": card_data.get("back", ""),
         "folder": folder_name.strip().replace(" ", "_"),
         "deck": deck_name.strip().replace(" ", "_").lower(),
         "card_type": card_data.get("card_type", "concept"),
         "source_type": card_data.get("source_type", "manual_entry")
     }
     
-    collection.upsert(documents=[document_text], metadatas=[metadata], ids=[card_id])
+    collection.upsert(documents=[front_text], metadatas=[metadata], ids=[card_id])
 
 def delete_card_from_chroma(card_id: str):
     """Removes a single card from ChromaDB by card_id."""
@@ -55,13 +42,12 @@ def delete_card_from_chroma(card_id: str):
         print(f"Warning: Could not delete card {card_id} from ChromaDB: {e}")
 
 def sync_deck_to_chroma(folder_name: str, deck_name: str, cards: list):
-    """Bulk updates or replaces all card embeddings for a given deck."""
+    """Bulk updates all card embeddings for a deck using front text for documents."""
     clean_folder = folder_name.strip().replace(" ", "_")
     clean_deck = deck_name.strip().replace(" ", "_").lower()
     
     collection = get_collection()
     
-    # 1. Delete existing vectors for this deck
     try:
         collection.delete(
             where={
@@ -74,15 +60,16 @@ def sync_deck_to_chroma(folder_name: str, deck_name: str, cards: list):
     except Exception:
         pass
     
-    # 2. Batch upsert remaining active cards
     if not cards:
         return
 
-    documents = [format_card_text(c) for c in cards]
+    documents = [c.get("front", "").strip() for c in cards]
     ids = [c["card_id"] for c in cards]
     metadatas = [
         {
             "card_id": c["card_id"],
+            "front": c.get("front", "").strip(),
+            "back": c.get("back", ""),
             "folder": clean_folder,
             "deck": clean_deck,
             "card_type": c.get("card_type", "concept"),
@@ -180,18 +167,11 @@ def rename_folder_in_chroma(old_folder_name: str, new_folder_name: str):
     except Exception as e:
         print(f"Warning: Could not update folder metadata in ChromaDB: {e}")
 
-def check_candidate_duplicates(candidate_cards: list, folder_name: str = None, deck_name: str = None, distance_threshold: float = 0.35) -> list:
+def check_candidate_duplicates(candidate_cards: list, folder_name: str = None, deck_name: str = None, distance_threshold: float = 0.45) -> list:
     """
-    Checks proposed AI candidate cards against ChromaDB.
-    Attaches 'is_duplicate' flag and 'matched_existing_front' text to candidate dicts.
+    Checks candidate cards against ChromaDB AND intra-batch using vector similarity and normalized text.
     """
     collection = get_collection()
-    
-    if collection.count() == 0:
-        for card in candidate_cards:
-            card["is_duplicate"] = False
-            card["matched_existing_front"] = None
-        return candidate_cards
 
     where_filter = None
     if folder_name and deck_name:
@@ -204,25 +184,54 @@ def check_candidate_duplicates(candidate_cards: list, folder_name: str = None, d
     elif folder_name:
         where_filter = {"folder": folder_name.strip().replace(" ", "_")}
 
-    for card in candidate_cards:
-        results = collection.query(
-            query_texts=[card["front"]],
-            n_results=1,
-            where=where_filter
-        )
+    seen_fronts = []
+    seen_backs = []
 
+    for card in candidate_cards:
         is_duplicate = False
         matched_text = None
+        
+        front_text = card.get("front", "").strip()
+        back_text = card.get("back", "").strip()
+        
+        clean_front = "".join(c for c in front_text.lower() if c.isalnum() or c.isspace())
+        clean_back = "".join(c for c in back_text.lower() if c.isalnum() or c.isspace())
 
-        if results and results["distances"] and len(results["distances"][0]) > 0:
-            top_distance = results["distances"][0][0]
-            
-            if top_distance < distance_threshold:
+        # 1. Intra-batch check (Check if back answer is identical OR normalized question overlaps)
+        for idx, (seen_f, seen_b) in enumerate(zip(seen_fronts, seen_backs)):
+            if clean_back and clean_back == seen_b:
                 is_duplicate = True
-                # Extract the matched text document from ChromaDB results
-                matched_text = results["documents"][0][0]
+                matched_text = f"Identical answer to Card #{idx+1} in this batch"
+                break
+            
+            if clean_front and (clean_front in seen_f or seen_f in clean_front):
+                is_duplicate = True
+                matched_text = f"Similar question to Card #{idx+1} in this batch"
+                break
+
+        # 2. ChromaDB search (for existing cards in database)
+        if not is_duplicate and collection.count() > 0:
+            try:
+                results = collection.query(
+                    query_texts=[front_text],
+                    n_results=1,
+                    where=where_filter
+                )
+
+                if results and results["distances"] and len(results["distances"][0]) > 0:
+                    top_distance = results["distances"][0][0]
+                    
+                    if top_distance < distance_threshold:
+                        is_duplicate = True
+                        matched_meta = results["metadatas"][0][0] if results["metadatas"] else {}
+                        matched_text = matched_meta.get("front") or results["documents"][0][0]
+            except Exception as e:
+                print(f"Warning: Deduplication query error: {e}")
 
         card["is_duplicate"] = is_duplicate
         card["matched_existing_front"] = matched_text
+        
+        seen_fronts.append(clean_front)
+        seen_backs.append(clean_back)
 
     return candidate_cards
