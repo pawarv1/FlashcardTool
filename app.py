@@ -2,6 +2,7 @@ import os
 import random
 from typing import get_args
 import streamlit as st
+from langchain_core.messages import HumanMessage, AIMessage
 from document_parser import get_markdown_chunks
 from card_generator import generate_flashcards_from_chunks, CardTypeEnum
 from vector_utils import check_candidate_duplicates
@@ -20,6 +21,7 @@ from storage_utils import (
     delete_single_card,
 )
 from anki_utils import generate_anki_deck_bytes
+from agent import agent_graph
 
 CARD_TYPES = get_args(CardTypeEnum) if get_args(CardTypeEnum) else ["concept", "code_snippet", "definition", "formula", "comparison", "example"]
 
@@ -292,8 +294,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
     st.caption(f"Folder: {st.session_state.current_folder}")
     st.divider()
 
-    # SUB-TABS INSIDE DECK VIEW
-    deck_tab_cards, deck_tab_study = st.tabs(["🎴 Cards", "📖 Study Mode"])
+    deck_tab_cards, deck_tab_study, deck_tab_chat = st.tabs(["🎴 Cards", "📖 Study Mode", "💬 Chat Assistant"])
 
     deck_content = load_deck(st.session_state.current_folder, st.session_state.current_deck)
     cards = deck_content.get("cards", [])
@@ -450,6 +451,53 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                 with col_easy:
                     if st.button("🟢 Easy (+2)", use_container_width=True):
                         grade_and_advance(2)
+
+    # SUB-TAB 3: AGENTIC RAG CHAT ASSISTANT
+    with deck_tab_chat:
+        col_chat_title, col_chat_clear = st.columns([4, 1])
+        with col_chat_title:
+            st.subheader(f"💬 Study Assistant ({st.session_state.current_deck})")
+        with col_chat_clear:
+            chat_key = f"messages_{st.session_state.current_folder}_{st.session_state.current_deck}"
+            if st.button("🧹 Clear Chat", use_container_width=True):
+                st.session_state[chat_key] = []
+                st.rerun()
+
+        # Initialize deck-specific chat history
+        if chat_key not in st.session_state:
+            st.session_state[chat_key] = []
+
+        # Render conversation history
+        for msg in st.session_state[chat_key]:
+            role = "user" if isinstance(msg, HumanMessage) else "assistant"
+            with st.chat_message(role):
+                st.write(msg.content)
+
+        # Handle user prompt input
+        if prompt := st.chat_input("Ask a question about this deck..."):
+            # Append user query to UI state and display
+            user_msg = HumanMessage(content=prompt)
+            st.session_state[chat_key].append(user_msg)
+            
+            with st.chat_message("user"):
+                st.write(prompt)
+
+            # Invoke Agentic Graph with current deck scope
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    graph_input = {
+                        "messages": st.session_state[chat_key],
+                        "folder_name": st.session_state.current_folder,
+                        "deck_name": st.session_state.current_deck
+                    }
+                    
+                    response = agent_graph.invoke(graph_input)
+                    assistant_messages = response.get("messages", [])
+                    
+                    if assistant_messages:
+                        final_response = assistant_messages[-1]
+                        st.write(final_response.content)
+                        st.session_state[chat_key].append(final_response)
 
 # VIEW 2: INDIVIDUAL FOLDER VIEW (List of Decks)
 elif st.session_state.current_folder is not None:
