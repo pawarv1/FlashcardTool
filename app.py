@@ -9,24 +9,35 @@ from vector_utils import check_candidate_duplicates
 from storage_utils import (
     create_folder, 
     create_deck, 
-    get_folders, 
-    get_decks, 
+    get_all_folders, 
+    get_decks_in_folder, 
     rename_folder,
     delete_folder,
     rename_deck,
     delete_deck,
-    save_card_to_json, 
-    load_deck, 
-    update_single_card, 
-    delete_single_card,
+    save_card,
+    save_card_batch,
+    load_deck_cards, 
+    delete_card,
 )
 from anki_utils import generate_anki_deck_bytes
 from agent import agent_graph
 from quiz_engine import generate_quiz_question, grade_user_answer
+from db import init_db, auto_heal_chroma_sync
+
+# 1. DATABASE & VECTOR INITIALIZATION
+@st.cache_resource
+def setup_database():
+    """Runs database initialization and vector sync healing once per app startup."""
+    init_db()
+    auto_heal_chroma_sync()
+    return True
+
+setup_database()
 
 CARD_TYPES = get_args(CardTypeEnum) if get_args(CardTypeEnum) else ["concept", "code_snippet", "definition", "formula", "comparison", "example"]
 
-# 1. PAGE CONFIG
+# PAGE CONFIG
 st.set_page_config(
     page_title="Agentic RAG Study Assistant", 
     page_icon="📚", 
@@ -56,7 +67,7 @@ def render_media(media_url: str):
     else:
         st.markdown(f"🔗 [View Attached Media]({media_url})")
 
-# 2. DIALOG POPUPS (Folders & Decks)
+# DIALOG POPUPS
 @st.dialog("New Folder")
 def new_folder_popup():
     new_folder_name = st.text_input("Enter New Folder Name")
@@ -114,7 +125,7 @@ def new_card_popup():
                 "source_type": "manual_entry",
                 "mastery_level": 0
             }
-            save_card_to_json(
+            save_card(
                 folder_name=st.session_state.current_folder,
                 deck_name=st.session_state.current_deck,
                 card_data=card_data
@@ -154,10 +165,10 @@ def edit_card_popup(card: dict):
                     "source_type": card.get("source_type", "manual_entry"),
                     "mastery_level": card.get("mastery_level", 0)
                 }
-                update_single_card(
+                save_card(
                     folder_name=st.session_state.current_folder,
                     deck_name=st.session_state.current_deck,
-                    updated_card=updated_card
+                    card_data=updated_card
                 )
                 st.rerun()
             else:
@@ -167,14 +178,10 @@ def edit_card_popup(card: dict):
         with st.expander("🗑️ Delete Card"):
             st.warning("Delete this card permanently?")
             if st.button("Yes, Delete", type="primary", use_container_width=True, key=f"del_confirm_{card.get('card_id')}"):
-                delete_single_card(
-                    folder_name=st.session_state.current_folder,
-                    deck_name=st.session_state.current_deck,
-                    card_id=card.get("card_id")
-                )
+                delete_card(card_id=card.get("card_id"))
                 st.rerun()
 
-# 3. DOCUMENT INGESTION & AI DRAFTING DIALOG
+# DOCUMENT INGESTION & AI DRAFTING DIALOG
 @st.dialog("📄 Ingest Document & Generate Cards", width="large")
 def ingest_document_popup():
     uploaded_file = st.file_uploader(
@@ -192,17 +199,14 @@ def ingest_document_popup():
 
     if st.button("⚙️ Parse & Generate Drafts", type="primary", disabled=not uploaded_file):
         with st.spinner("Parsing document and drafting flashcards via Llama 3.1..."):
-            # 1. Parse & Chunk Document via MarkItDown
             document_chunks = get_markdown_chunks(uploaded_file)
             
-            # 2. AI Card Generation via llama3.1 & Pydantic structuring
             raw_drafts = generate_flashcards_from_chunks(
                 document_chunks=document_chunks, 
                 user_instructions=instructions, 
                 target_count=num_cards
             )
             
-            # 3. Duplicate Detection against ChromaDB
             flagged_drafts = check_candidate_duplicates(
                 candidate_cards=raw_drafts,
                 folder_name=st.session_state.current_folder,
@@ -256,17 +260,17 @@ def ingest_document_popup():
 
         st.divider()
         if st.button(f"💾 Save {len(selected_indices)} Selected Cards", type="primary", use_container_width=True):
-            for idx in selected_indices:
-                save_card_to_json(
-                    folder_name=st.session_state.current_folder,
-                    deck_name=st.session_state.current_deck,
-                    card_data=edited_drafts[idx]
-                )
+            cards_to_import = [edited_drafts[idx] for idx in selected_indices]
+            save_card_batch(
+                folder_name=st.session_state.current_folder,
+                deck_name=st.session_state.current_deck,
+                cards=cards_to_import
+            )
             st.session_state.draft_cards = None
             st.success(f"Successfully imported {len(selected_indices)} cards!")
             st.rerun()
 
-# 4. NAVIGATION LOGIC
+# NAVIGATION LOGIC
 
 # VIEW 3: INDIVIDUAL DECK VIEW
 if st.session_state.current_folder is not None and st.session_state.current_deck is not None:
@@ -297,8 +301,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
 
     deck_tab_cards, deck_tab_study, deck_tab_chat, deck_tab_quiz = st.tabs(["🎴 Cards", "📖 Study Mode", "💬 Chat Assistant", "📝 AI Quiz"])
 
-    deck_content = load_deck(st.session_state.current_folder, st.session_state.current_deck)
-    cards = deck_content.get("cards", [])
+    cards = load_deck_cards(st.session_state.current_folder, st.session_state.current_deck)
 
     # SUB-TAB 1: CARD LIST & MANAGEMENT
     with deck_tab_cards:
@@ -429,10 +432,10 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                     updated_card = curr_card.copy()
                     updated_card["mastery_level"] = updated_mastery
                     
-                    update_single_card(
+                    save_card(
                         folder_name=st.session_state.current_folder,
                         deck_name=st.session_state.current_deck,
-                        updated_card=updated_card
+                        card_data=updated_card
                     )
                     
                     if st.session_state.study_card_index < total_cards - 1:
@@ -463,17 +466,14 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                 st.session_state[chat_key] = []
                 st.rerun()
 
-        # Initialize deck-specific chat history
         if chat_key not in st.session_state:
             st.session_state[chat_key] = []
 
-        # Render conversation history
         for msg in st.session_state[chat_key]:
             role = "user" if isinstance(msg, HumanMessage) else "assistant"
             with st.chat_message(role):
                 st.write(msg.content)
 
-        # Handle user prompt input
         if prompt := st.chat_input("Ask a question about this deck..."):
             user_msg = HumanMessage(content=prompt)
             st.session_state[chat_key].append(user_msg)
@@ -557,7 +557,6 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                         st.session_state[grade_key] = evaluation
                         st.rerun()
 
-            # Render Evaluation Results
             current_grade = st.session_state[grade_key]
             if current_grade:
                 st.divider()
@@ -607,7 +606,7 @@ elif st.session_state.current_folder is not None:
         new_deck_popup()
 
     st.subheader("Decks")
-    decks = get_decks(st.session_state.current_folder)
+    decks = get_decks_in_folder(st.session_state.current_folder)
 
     for d in decks:
         col_d_btn, col_d_ren, col_d_del = st.columns([4, 1, 1])
@@ -633,7 +632,7 @@ else:
         new_folder_popup()
 
     st.subheader("All Folders")
-    folders = get_folders()
+    folders = get_all_folders()
 
     for f in folders:
         col_f_btn, col_f_ren, col_f_del = st.columns([4, 1, 1])

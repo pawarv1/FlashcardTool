@@ -1,241 +1,422 @@
-import os
-import json
 import uuid
-import shutil
-from datetime import datetime
+from typing import List, Dict, Optional
+from db import get_db_connection
 from vector_utils import (
     upsert_card_to_chroma,
     delete_card_from_chroma,
-    sync_deck_to_chroma,
     delete_deck_from_chroma,
     delete_folder_from_chroma,
     rename_deck_in_chroma,
-    rename_folder_in_chroma
+    rename_folder_in_chroma,
+    get_collection
 )
 
-BASE_DECKS_DIR = "./decks"
+# -------------------------------------------------------------------
+# FOLDER OPERATIONS
+# -------------------------------------------------------------------
 
-def ensure_deck_structure():
-    """Ensures the base decks directory exists."""
-    if not os.path.exists(BASE_DECKS_DIR):
-        os.makedirs(BASE_DECKS_DIR)
+def get_all_folders() -> List[str]:
+    """Returns a list of active (non-deleted) folder names."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        rows = cursor.execute(
+            "SELECT name FROM folders WHERE is_deleted = 0 ORDER BY name ASC;"
+        ).fetchall()
+        return [r["name"] for r in rows]
 
-def create_folder(folder_name: str):
-    """Creates a folder"""
-    ensure_deck_structure()
-    clean_folder_name = folder_name.strip().replace(" ", "_")
-    folder_path = os.path.join(BASE_DECKS_DIR, clean_folder_name)
-    os.makedirs(folder_path, exist_ok=True)
+def create_folder(folder_name: str) -> bool:
+    """Creates a new folder or restores a soft-deleted one."""
+    clean_name = folder_name.strip()
+    if not clean_name:
+        return False
 
-def create_deck(folder_name: str, deck_name: str):
-    """Creates a deck"""
-    ensure_deck_structure()
-    clean_folder_name = folder_name.strip().replace(" ", "_")
-    clean_deck_name = deck_name.strip().replace(" ", "_").lower()
-    folder_path = os.path.join(BASE_DECKS_DIR, clean_folder_name)
-    os.makedirs(folder_path, exist_ok=True)
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        existing = cursor.execute(
+            "SELECT id, is_deleted FROM folders WHERE name = ?;", (clean_name,)
+        ).fetchone()
 
-    file_path = os.path.join(folder_path, f"{clean_deck_name}.json")
+        if existing:
+            if existing["is_deleted"] == 1:
+                # Restore the folder
+                cursor.execute(
+                    "UPDATE folders SET is_deleted = 0 WHERE id = ?;", (existing["id"],)
+                )
+                conn.commit()
+                return True
+            return False
 
-    if os.path.exists(file_path):
-        return
-    
-    deck_content = {
-        "deck_name": deck_name,
-        "folder": folder_name,
-        "cards": []
-    }
+        cursor.execute("INSERT INTO folders (name) VALUES (?);", (clean_name,))
+        conn.commit()
+        return True
 
-    with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(deck_content, f, indent=2)
+def rename_folder(old_name: str, new_name: str) -> bool:
+    """Renames an existing folder and updates vector metadata in ChromaDB."""
+    clean_old = old_name.strip()
+    clean_new = new_name.strip()
 
-def save_card_to_json(folder_name: str, deck_name: str, card_data: dict):
-    """Saves or appends a card to a specific deck JSON file."""
-    clean_folder_name = folder_name.strip().replace(" ", "_")
-    clean_deck_name = deck_name.strip().replace(" ", "_").lower()
-    file_path = os.path.join(BASE_DECKS_DIR, clean_folder_name, f"{clean_deck_name}.json")
+    if not clean_new or clean_old == clean_new:
+        return False
 
-    with open(file_path, "r", encoding="utf-8") as f:
-        deck_content = json.load(f)
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE folders SET name = ? WHERE name = ? AND is_deleted = 0;",
+                (clean_new, clean_old)
+            )
+            if cursor.rowcount > 0:
+                conn.commit()
+                rename_folder_in_chroma(clean_old, clean_new)
+                return True
+        except Exception as e:
+            print(f"Error renaming folder: {e}")
+    return False
 
-    full_card = {
-        "card_id": card_data.get("card_id") or f"card_{uuid.uuid4().hex[:8]}",
-        "card_type": card_data.get("card_type", "concept"),
-        "front": card_data.get("front", ""),
-        "code_block": card_data.get("code_block", None),
-        "back": card_data.get("back", ""),
-        "explanation": card_data.get("explanation", None),
-        "source_type": card_data.get("source_type", "manual_entry"),
-        "mastery_level": card_data.get("mastery_level", 0),
-        "media_url": card_data.get("media_url", None),
-        "created_at": card_data.get("created_at") or datetime.now().strftime("%Y-%m-%d")
-    }
-
-    deck_content["cards"].append(full_card)
-
-    with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(deck_content, f, indent=2)
-
-    upsert_card_to_chroma(folder_name, deck_name, full_card)
-
-def get_folders() -> list:
-    """Returns all folder names in the base directory"""
-    ensure_deck_structure()
-    return [f for f in os.listdir(BASE_DECKS_DIR) if os.path.isdir(os.path.join(BASE_DECKS_DIR, f))]
-
-def get_decks(folder_name: str) -> list:
-    """Returns all decks in the folder"""
-    ensure_deck_structure()
-    clean_folder_name = folder_name.strip().replace(" ", "_")
-    folder_path = os.path.join(BASE_DECKS_DIR, clean_folder_name)
-
-    if not os.path.exists(folder_path):
-        return []
-
-    return [
-        f[:-5] for f in os.listdir(folder_path)
-        if os.path.isfile(os.path.join(folder_path, f)) and f.endswith(".json")
-    ]
-
-def load_deck(folder_name: str, deck_name: str) -> dict:
-    """Loads a full deck JSON object from disk."""
-    clean_folder_name = folder_name.strip().replace(" ", "_")
-    clean_deck_name = deck_name.strip().replace(" ", "_").lower()
-    file_path = os.path.join(BASE_DECKS_DIR, clean_folder_name, f"{clean_deck_name}.json")
-
-    if os.path.exists(file_path):        
-        with open(file_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+def delete_folder(folder_name: str) -> bool:
+    """Soft-deletes a folder and purges its associated vectors from ChromaDB."""
+    clean_name = folder_name.strip()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
         
-    return {"deck_name": deck_name, "folder": folder_name, "cards": []}
+        folder = cursor.execute(
+            "SELECT id FROM folders WHERE name = ? AND is_deleted = 0;", (clean_name,)
+        ).fetchone()
 
-def update_single_card(folder_name: str, deck_name: str, updated_card: dict):
-    """Updates a single card in a JSON deck by matching its card_id."""
-    clean_folder_name = folder_name.strip().replace(" ", "_")
-    clean_deck_name = deck_name.strip().replace(" ", "_").lower()
-    file_path = os.path.join(BASE_DECKS_DIR, clean_folder_name, f"{clean_deck_name}.json")
+        if not folder:
+            return False
 
-    if os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as f:
-            deck_content = json.load(f)
+        folder_id = folder["id"]
 
-        cards = deck_content.get("cards", [])
-        for i, card in enumerate(cards):
-            if card.get("card_id") == updated_card.get("card_id"):
-                cards[i] = updated_card
-                break
+        cursor.execute("UPDATE folders SET is_deleted = 1 WHERE id = ?;", (folder_id,))
+        cursor.execute("UPDATE decks SET is_deleted = 1 WHERE folder_id = ?;", (folder_id,))
+        cursor.execute("""
+            UPDATE cards 
+            SET is_deleted = 1 
+            WHERE deck_id IN (SELECT id FROM decks WHERE folder_id = ?);
+        """, (folder_id,))
+        
+        conn.commit()
 
-        deck_content["cards"] = cards
+        delete_folder_from_chroma(clean_name)
+        return True
 
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(deck_content, f, indent=2)
+# -------------------------------------------------------------------
+# DECK OPERATIONS
+# -------------------------------------------------------------------
 
-        upsert_card_to_chroma(folder_name, deck_name, updated_card)
+def get_decks_in_folder(folder_name: str) -> List[str]:
+    """Returns a list of active deck names within a specific folder."""
+    clean_folder = folder_name.strip()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        query = """
+            SELECT d.name 
+            FROM decks d
+            JOIN folders f ON d.folder_id = f.id
+            WHERE f.name = ? AND f.is_deleted = 0 AND d.is_deleted = 0
+            ORDER BY d.name ASC;
+        """
+        rows = cursor.execute(query, (clean_folder,)).fetchall()
+        return [r["name"] for r in rows]
 
-def delete_single_card(folder_name: str, deck_name: str, card_id: str):
-    """Deletes a single card from a JSON deck by matching its card_id."""
-    clean_folder_name = folder_name.strip().replace(" ", "_")
-    clean_deck_name = deck_name.strip().replace(" ", "_").lower()
-    file_path = os.path.join(BASE_DECKS_DIR, clean_folder_name, f"{clean_deck_name}.json")
+def create_deck(folder_name: str, deck_name: str) -> bool:
+    """Creates a new deck inside a parent folder or restores a soft-deleted one."""
+    clean_folder = folder_name.strip()
+    clean_deck = deck_name.strip()
 
-    if os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as f:
-            deck_content = json.load(f)
+    if not clean_deck:
+        return False
 
-        cards = deck_content.get("cards", [])
-        updated_cards = [c for c in cards if c.get("card_id") != card_id]
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        folder = cursor.execute(
+            "SELECT id FROM folders WHERE name = ? AND is_deleted = 0;", (clean_folder,)
+        ).fetchone()
 
-        deck_content["cards"] = updated_cards
+        if not folder:
+            return False
 
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(deck_content, f, indent=2)
+        folder_id = folder["id"]
 
-        delete_card_from_chroma(card_id)
+        existing = cursor.execute(
+            "SELECT id, is_deleted FROM decks WHERE folder_id = ? AND name = ?;",
+            (folder_id, clean_deck)
+        ).fetchone()
 
-def update_deck_cards(folder_name: str, deck_name: str, updated_cards: list):
-    """Overwrites the cards array for a deck (used for edits, deletes, or reordering)."""
-    clean_folder_name = folder_name.strip().replace(" ", "_")
-    clean_deck_name = deck_name.strip().replace(" ", "_").lower()
-    file_path = os.path.join(BASE_DECKS_DIR, clean_folder_name, f"{clean_deck_name}.json")
+        if existing:
+            if existing["is_deleted"] == 1:
+                # Restore the deck
+                cursor.execute(
+                    "UPDATE decks SET is_deleted = 0 WHERE id = ?;", (existing["id"],)
+                )
+                conn.commit()
+                return True
+            return False
 
-    if os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as f:
-            deck_content = json.load(f)
+        cursor.execute(
+            "INSERT INTO decks (folder_id, name) VALUES (?, ?);",
+            (folder_id, clean_deck)
+        )
+        conn.commit()
+        return True
 
-        deck_content["cards"] = updated_cards
+def rename_deck(folder_name: str, old_deck_name: str, new_deck_name: str) -> bool:
+    """Renames a deck and updates metadata in ChromaDB."""
+    clean_folder = folder_name.strip()
+    clean_old = old_deck_name.strip()
+    clean_new = new_deck_name.strip()
 
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(deck_content, f, indent = 2)
+    if not clean_new or clean_old == clean_new:
+        return False
 
-        sync_deck_to_chroma(folder_name, deck_name, updated_cards)
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        query = """
+            UPDATE decks 
+            SET name = ? 
+            WHERE name = ? AND folder_id = (SELECT id FROM folders WHERE name = ? AND is_deleted = 0)
+              AND is_deleted = 0;
+        """
+        cursor.execute(query, (clean_new, clean_old, clean_folder))
+        if cursor.rowcount > 0:
+            conn.commit()
+            rename_deck_in_chroma(clean_folder, clean_old, clean_new)
+            return True
+    return False
 
-def delete_deck(folder_name: str, deck_name: str):
-    """Deletes a deck file from disk and removes its vectors from ChromaDB."""
-    clean_folder = folder_name.strip().replace(" ", "_")
-    clean_deck = deck_name.strip().replace(" ", "_").lower()
-    file_path = os.path.join(BASE_DECKS_DIR, clean_folder, f"{clean_deck}.json")
+def delete_deck(folder_name: str, deck_name: str) -> bool:
+    """Soft-deletes a deck and purges its cards from ChromaDB."""
+    clean_folder = folder_name.strip()
+    clean_deck = deck_name.strip()
 
-    if os.path.exists(file_path):
-        os.remove(file_path)
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        deck = cursor.execute("""
+            SELECT d.id 
+            FROM decks d
+            JOIN folders f ON d.folder_id = f.id
+            WHERE f.name = ? AND d.name = ? AND f.is_deleted = 0 AND d.is_deleted = 0;
+        """, (clean_folder, clean_deck)).fetchone()
 
-    delete_deck_from_chroma(folder_name, deck_name)
+        if not deck:
+            return False
 
-def delete_folder(folder_name: str):
-    """Deletes an entire folder directory and removes its vectors from ChromaDB."""
-    clean_folder = folder_name.strip().replace(" ", "_")
-    folder_path = os.path.join(BASE_DECKS_DIR, clean_folder)
+        deck_id = deck["id"]
 
-    if os.path.exists(folder_path):
-        shutil.rmtree(folder_path)
+        cursor.execute("UPDATE decks SET is_deleted = 1 WHERE id = ?;", (deck_id,))
+        cursor.execute("UPDATE cards SET is_deleted = 1 WHERE deck_id = ?;", (deck_id,))
+        conn.commit()
 
-    delete_folder_from_chroma(folder_name)
+        delete_deck_from_chroma(clean_folder, clean_deck)
+        return True
 
-def rename_deck(folder_name: str, old_deck_name: str, new_deck_name: str):
-    """Renames a deck JSON file and updates ChromaDB metadata."""
-    clean_folder = folder_name.strip().replace(" ", "_")
-    clean_old_deck = old_deck_name.strip().replace(" ", "_").lower()
-    clean_new_deck = new_deck_name.strip().replace(" ", "_").lower()
+# -------------------------------------------------------------------
+# CARD OPERATIONS
+# -------------------------------------------------------------------
 
-    old_file_path = os.path.join(BASE_DECKS_DIR, clean_folder, f"{clean_old_deck}.json")
-    new_file_path = os.path.join(BASE_DECKS_DIR, clean_folder, f"{clean_new_deck}.json")
+def load_deck_cards(folder_name: str, deck_name: str) -> List[Dict]:
+    """Loads all active cards for a specific folder and deck."""
+    clean_folder = folder_name.strip()
+    clean_deck = deck_name.strip()
 
-    if not os.path.exists(old_file_path):
-        return
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        query = """
+            SELECT c.* 
+            FROM cards c
+            JOIN decks d ON c.deck_id = d.id
+            JOIN folders f ON d.folder_id = f.id
+            WHERE f.name = ? AND d.name = ? 
+              AND f.is_deleted = 0 AND d.is_deleted = 0 AND c.is_deleted = 0
+            ORDER BY c.created_at ASC;
+        """
+        rows = cursor.execute(query, (clean_folder, clean_deck)).fetchall()
+        
+        cards = []
+        for r in rows:
+            card_dict = dict(r)
+            # Rename database field 'id' to 'card_id' for application compatibility
+            card_dict["card_id"] = card_dict.pop("id")
+            cards.append(card_dict)
+        return cards
 
-    with open(old_file_path, "r", encoding="utf-8") as f:
-        deck_content = json.load(f)
+def save_card(folder_name: str, deck_name: str, card_data: Dict) -> bool:
+    """Inserts or updates a single card in SQLite and syncs to ChromaDB."""
+    clean_folder = folder_name.strip()
+    clean_deck = deck_name.strip()
 
-    deck_content["deck_name"] = new_deck_name
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        deck = cursor.execute("""
+            SELECT d.id 
+            FROM decks d
+            JOIN folders f ON d.folder_id = f.id
+            WHERE f.name = ? AND d.name = ? AND f.is_deleted = 0 AND d.is_deleted = 0;
+        """, (clean_folder, clean_deck)).fetchone()
 
-    with open(new_file_path, "w", encoding="utf-8") as f:
-        json.dump(deck_content, f, indent=2)
+        if not deck:
+            return False
 
-    os.remove(old_file_path)
+        deck_id = deck["id"]
+        card_id = card_data.get("card_id") or str(uuid.uuid4())
 
-    rename_deck_in_chroma(folder_name, old_deck_name, new_deck_name)
+        query = """
+            INSERT INTO cards (
+                id, deck_id, card_type, front, back, code_block, explanation, 
+                source_type, mastery_level, ease_factor, interval_days, 
+                repetition_count, next_review_at, synced_to_chroma, is_deleted
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            ON CONFLICT(id) DO UPDATE SET
+                card_type = excluded.card_type,
+                front = excluded.front,
+                back = excluded.back,
+                code_block = excluded.code_block,
+                explanation = excluded.explanation,
+                source_type = excluded.source_type,
+                mastery_level = excluded.mastery_level,
+                ease_factor = excluded.ease_factor,
+                interval_days = excluded.interval_days,
+                repetition_count = excluded.repetition_count,
+                next_review_at = excluded.next_review_at,
+                synced_to_chroma = 0,
+                is_deleted = 0;
+        """
 
-def rename_folder(old_folder_name: str, new_folder_name: str):
-    """Renames a folder directory and updates internal JSON and ChromaDB metadata."""
-    clean_old_folder = old_folder_name.strip().replace(" ", "_")
-    clean_new_folder = new_folder_name.strip().replace(" ", "_")
+        cursor.execute(query, (
+            card_id,
+            deck_id,
+            card_data.get("card_type", "concept"),
+            card_data.get("front", "").strip(),
+            card_data.get("back", "").strip(),
+            card_data.get("code_block"),
+            card_data.get("explanation"),
+            card_data.get("source_type", "manual_entry"),
+            card_data.get("mastery_level", 0),
+            card_data.get("ease_factor", 2.5),
+            card_data.get("interval_days", 0),
+            card_data.get("repetition_count", 0),
+            card_data.get("next_review_at")
+        ))
+        conn.commit()
 
-    old_folder_path = os.path.join(BASE_DECKS_DIR, clean_old_folder)
-    new_folder_path = os.path.join(BASE_DECKS_DIR, clean_new_folder)
+        # Update ChromaDB vector store
+        card_data["card_id"] = card_id
+        try:
+            upsert_card_to_chroma(clean_folder, clean_deck, card_data)
+            cursor.execute("UPDATE cards SET synced_to_chroma = 1 WHERE id = ?;", (card_id,))
+            conn.commit()
+        except Exception as e:
+            print(f"Warning: Failed to sync card {card_id} to ChromaDB: {e}")
 
-    if not os.path.exists(old_folder_path):
-        return
+        return True
 
-    os.rename(old_folder_path, new_folder_path)
+def save_card_batch(folder_name: str, deck_name: str, cards: List[Dict]) -> bool:
+    """Saves multiple cards in a single database transaction and bulk upserts to ChromaDB."""
+    if not cards:
+        return True
 
-    for file_name in os.listdir(new_folder_path):
-        if file_name.endswith(".json"):
-            file_path = os.path.join(new_folder_path, file_name)
-            with open(file_path, "r", encoding="utf-8") as f:
-                deck_content = json.load(f)
+    clean_folder = folder_name.strip()
+    clean_deck = deck_name.strip()
 
-            deck_content["folder"] = new_folder_name
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        deck = cursor.execute("""
+            SELECT d.id 
+            FROM decks d
+            JOIN folders f ON d.folder_id = f.id
+            WHERE f.name = ? AND d.name = ? AND f.is_deleted = 0 AND d.is_deleted = 0;
+        """, (clean_folder, clean_deck)).fetchone()
 
-            with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(deck_content, f, indent=2)
+        if not deck:
+            return False
 
-    rename_folder_in_chroma(old_folder_name, new_folder_name)
+        deck_id = deck["id"]
+        
+        query = """
+            INSERT INTO cards (
+                id, deck_id, card_type, front, back, code_block, explanation, 
+                source_type, mastery_level, ease_factor, interval_days, 
+                repetition_count, next_review_at, synced_to_chroma, is_deleted
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            ON CONFLICT(id) DO UPDATE SET
+                card_type = excluded.card_type,
+                front = excluded.front,
+                back = excluded.back,
+                code_block = excluded.code_block,
+                explanation = excluded.explanation,
+                source_type = excluded.source_type,
+                mastery_level = excluded.mastery_level,
+                ease_factor = excluded.ease_factor,
+                interval_days = excluded.interval_days,
+                repetition_count = excluded.repetition_count,
+                next_review_at = excluded.next_review_at,
+                synced_to_chroma = 0,
+                is_deleted = 0;
+        """
+
+        ids_to_sync = []
+        documents = []
+        metadatas = []
+
+        for card in cards:
+            card_id = card.get("card_id") or str(uuid.uuid4())
+            card["card_id"] = card_id
+            
+            cursor.execute(query, (
+                card_id,
+                deck_id,
+                card.get("card_type", "concept"),
+                card.get("front", "").strip(),
+                card.get("back", "").strip(),
+                card.get("code_block"),
+                card.get("explanation"),
+                card.get("source_type", "manual_entry"),
+                card.get("mastery_level", 0),
+                card.get("ease_factor", 2.5),
+                card.get("interval_days", 0),
+                card.get("repetition_count", 0),
+                card.get("next_review_at")
+            ))
+
+            ids_to_sync.append(card_id)
+            documents.append(card.get("front", "").strip())
+            metadatas.append({
+                "card_id": card_id,
+                "front": card.get("front", "").strip(),
+                "back": card.get("back", "").strip(),
+                "folder": clean_folder.replace(" ", "_"),
+                "deck": clean_deck.replace(" ", "_").lower(),
+                "card_type": card.get("card_type", "concept"),
+                "source_type": card.get("source_type", "manual_entry")
+            })
+
+        # Commit ALL cards to SQLite in a single transaction
+        conn.commit()
+
+        # Batch upsert to ChromaDB
+        try:
+            collection = get_collection()
+            collection.upsert(documents=documents, metadatas=metadatas, ids=ids_to_sync)
+
+            cursor.execute(
+                f"UPDATE cards SET synced_to_chroma = 1 WHERE id IN ({','.join(['?']*len(ids_to_sync))});", 
+                ids_to_sync
+            )
+            conn.commit()
+        except Exception as e:
+            print(f"Warning: Batch ChromaDB sync failed, auto-heal will handle it: {e}")
+
+    return True
+
+def delete_card(card_id: str) -> bool:
+    """Soft-deletes a card from SQLite and removes its vector from ChromaDB."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE cards SET is_deleted = 1 WHERE id = ?;", (card_id,))
+        if cursor.rowcount > 0:
+            conn.commit()
+            delete_card_from_chroma(card_id)
+            return True
+    return False

@@ -1,9 +1,6 @@
 import os
-import json
 import genanki
-import random
-
-BASE_DECKS_DIR = "./decks"
+from storage_utils import load_deck_cards
 
 CARD_MODEL = genanki.Model(
     1607392319,
@@ -46,25 +43,22 @@ CARD_MODEL = genanki.Model(
 )
 
 def generate_anki_deck_bytes(folder_name: str, deck_name: str) -> bytes:
-    """Reads JSON deck from disk and returns .apkg file as bytes for Streamlit downloading."""
+    """Fetches active cards from SQLite and builds an in-memory .apkg file for Streamlit download."""
+    cards = load_deck_cards(folder_name, deck_name)
+
+    if not cards:
+        raise ValueError(f"No active cards found in deck '{deck_name}' under folder '{folder_name}'.")
+
     clean_folder = folder_name.strip().replace(" ", "_")
     clean_deck = deck_name.strip().replace(" ", "_").lower()
-    
-    deck_path = os.path.join(BASE_DECKS_DIR, clean_folder, f"{clean_deck}.json")
-    
-    if not os.path.exists(deck_path):
-        raise FileNotFoundError(f"Deck file not found at {deck_path}")
 
-    with open(deck_path, "r", encoding="utf-8") as f:
-        deck_data = json.load(f)
-
-    # Generate a unique deterministic ID for the Anki deck based on folder and deck name
+    # Deterministic deck ID based on folder and deck names
     deck_id = abs(hash(f"{clean_folder}_{clean_deck}")) % (10**9)
-    display_title = f"{folder_name} :: {deck_data.get('deck_name', deck_name)}"
+    display_title = f"{folder_name} :: {deck_name}"
     
     anki_deck = genanki.Deck(deck_id, display_title)
 
-    for card in deck_data.get("cards", []):
+    for card in cards:
         front = card.get("front", "")
         back = card.get("back", "")
         code_block = card.get("code_block") or ""

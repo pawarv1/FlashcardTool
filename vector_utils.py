@@ -41,62 +41,6 @@ def delete_card_from_chroma(card_id: str):
     except Exception as e:
         print(f"Warning: Could not delete card {card_id} from ChromaDB: {e}")
 
-def sync_deck_to_chroma(folder_name: str, deck_name: str, cards: list):
-    """Bulk updates all card embeddings for a deck using front text for documents."""
-    clean_folder = folder_name.strip().replace(" ", "_")
-    clean_deck = deck_name.strip().replace(" ", "_").lower()
-    
-    collection = get_collection()
-    
-    try:
-        collection.delete(
-            where={
-                "$and": [
-                    {"folder": clean_folder},
-                    {"deck": clean_deck}
-                ]
-            }
-        )
-    except Exception:
-        pass
-    
-    if not cards:
-        return
-
-    documents = [c.get("front", "").strip() for c in cards]
-    ids = [c["card_id"] for c in cards]
-    metadatas = [
-        {
-            "card_id": c["card_id"],
-            "front": c.get("front", "").strip(),
-            "back": c.get("back", ""),
-            "folder": clean_folder,
-            "deck": clean_deck,
-            "card_type": c.get("card_type", "concept"),
-            "source_type": c.get("source_type", "manual_entry")
-        }
-        for c in cards
-    ]
-    
-    collection.upsert(documents=documents, metadatas=metadatas, ids=ids)
-
-def query_relevant_cards(query_text: str, folder_name: str = None, deck_name: str = None, n_results: int = 5) -> dict:
-    """Performs semantic similarity search over stored cards with optional folder/deck filters."""
-    collection = get_collection()
-    
-    where_filter = None
-    if folder_name and deck_name:
-        where_filter = {
-            "$and": [
-                {"folder": folder_name.strip().replace(" ", "_")},
-                {"deck": deck_name.strip().replace(" ", "_").lower()}
-            ]
-        }
-    elif folder_name:
-        where_filter = {"folder": folder_name.strip().replace(" ", "_")}
-        
-    return collection.query(query_texts=[query_text], n_results=n_results, where=where_filter)
-
 def delete_deck_from_chroma(folder_name: str, deck_name: str):
     """Deletes all card vectors belonging to a specific deck."""
     clean_folder = folder_name.strip().replace(" ", "_")
