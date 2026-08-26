@@ -216,28 +216,33 @@ def delete_deck(folder_name: str, deck_name: str) -> bool:
 # CARD OPERATIONS
 # -------------------------------------------------------------------
 
-def load_deck_cards(folder_name: str, deck_name: str) -> List[Dict]:
-    """Loads all active cards for a specific folder and deck."""
+def load_deck_cards(folder_name: str, deck_name: str, due_only: bool = False) -> List[Dict]:
+    """Loads active cards for a deck. If due_only=True, filters for cards needing review."""
     clean_folder = folder_name.strip()
     clean_deck = deck_name.strip()
 
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        query = """
+        
+        base_query = """
             SELECT c.* 
             FROM cards c
             JOIN decks d ON c.deck_id = d.id
             JOIN folders f ON d.folder_id = f.id
             WHERE f.name = ? AND d.name = ? 
               AND f.is_deleted = 0 AND d.is_deleted = 0 AND c.is_deleted = 0
-            ORDER BY c.created_at ASC;
         """
-        rows = cursor.execute(query, (clean_folder, clean_deck)).fetchall()
+        
+        if due_only:
+            base_query += " AND (c.next_review_at IS NULL OR c.next_review_at <= CURRENT_TIMESTAMP)"
+
+        base_query += " ORDER BY c.next_review_at ASC, c.created_at ASC;"
+
+        rows = cursor.execute(base_query, (clean_folder, clean_deck)).fetchall()
         
         cards = []
         for r in rows:
             card_dict = dict(r)
-            # Rename database field 'id' to 'card_id' for application compatibility
             card_dict["card_id"] = card_dict.pop("id")
             cards.append(card_dict)
         return cards

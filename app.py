@@ -24,6 +24,7 @@ from anki_utils import generate_anki_deck_bytes
 from agent import agent_graph
 from quiz_engine import generate_quiz_question, grade_user_answer
 from db import init_db, auto_heal_chroma_sync
+from sm2_utils import calculate_sm2
 
 # 1. DATABASE & VECTOR INITIALIZATION
 @st.cache_resource
@@ -368,24 +369,45 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
 
     # SUB-TAB 2: INTERACTIVE STUDY MODE
     with deck_tab_study:
-        if not cards:
-            st.info("Add cards to this deck to start studying!")
+        # 1. Study Mode Controls Header
+        col_mode_title, col_toggle = st.columns([2, 1])
+        with col_mode_title:
+            st.subheader("📖 Spaced Repetition Study")
+        with col_toggle:
+            only_due = st.toggle("⏰ Only Due Cards", value=False, help="Filter out cards that are not due for review yet")
+
+        # 2. Fetch cards based on toggle selection
+        study_cards = load_deck_cards(
+            st.session_state.current_folder, 
+            st.session_state.current_deck, 
+            due_only=only_due
+        )
+
+        if not study_cards:
+            if only_due:
+                st.success("🎉 All caught up! No cards in this deck are currently due for review.")
+            else:
+                st.info("No cards in this deck yet. Add cards to start studying!")
         else:
-            total_cards = len(cards)
+            total_cards = len(study_cards)
             
+            # Reset index if out of bounds when switching toggles
             if st.session_state.study_card_index >= total_cards:
                 st.session_state.study_card_index = 0
 
             curr_idx = st.session_state.study_card_index
-            curr_card = cards[curr_idx]
+            curr_card = study_cards[curr_idx]
 
             st.markdown(f"**Card {curr_idx + 1} of {total_cards}**")
             st.progress((curr_idx + 1) / total_cards)
 
+            # 3. Flashcard Render Container
             with st.container(border=True):
                 card_type = curr_card.get("card_type", "concept").upper()
-                mastery = curr_card.get("mastery_level", 0)
-                st.caption(f"Type: `{card_type}` | Mastery Level: {mastery}")
+                interval = curr_card.get("interval_days", 0)
+                reps = curr_card.get("repetition_count", 0)
+                
+                st.caption(f"Type: `{card_type}` | Repetitions: {reps} | Next Interval: {interval}d")
                 
                 st.markdown("### Question / Prompt")
                 st.write(curr_card.get("front", ""))
@@ -401,6 +423,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                     if curr_card.get("media_link"):
                         render_media(curr_card.get("media_link"))
 
+            # 4. Navigation Buttons
             col_prev, col_flip, col_next = st.columns([1, 2, 1])
 
             with col_prev:
@@ -421,16 +444,26 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                     st.session_state.study_is_flipped = False
                     st.rerun()
 
-            # Self-Grading Section
+            # 5. SM-2 Self-Grading Buttons
             if st.session_state.study_is_flipped:
                 st.markdown("---")
-                st.markdown("#### Rate Your Recall:")
-                col_hard, col_med, col_easy = st.columns(3)
+                st.markdown("#### Rate Your Recall (SM-2):")
+                col_again, col_hard, col_good, col_easy = st.columns(4)
 
-                def grade_and_advance(increment: int):
-                    updated_mastery = max(0, mastery + increment)
+                def process_sm2_review(quality_score: int):
+                    new_rep, new_ef, new_interval, next_review = calculate_sm2(
+                        quality=quality_score,
+                        repetition_count=curr_card.get("repetition_count", 0),
+                        ease_factor=curr_card.get("ease_factor", 2.5),
+                        interval_days=curr_card.get("interval_days", 0)
+                    )
+                    
                     updated_card = curr_card.copy()
-                    updated_card["mastery_level"] = updated_mastery
+                    updated_card["repetition_count"] = new_rep
+                    updated_card["ease_factor"] = new_ef
+                    updated_card["interval_days"] = new_interval
+                    updated_card["next_review_at"] = next_review
+                    updated_card["mastery_level"] = new_rep
                     
                     save_card(
                         folder_name=st.session_state.current_folder,
@@ -443,17 +476,21 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                     st.session_state.study_is_flipped = False
                     st.rerun()
 
-                with col_hard:
-                    if st.button("🔴 Hard (+0)", use_container_width=True):
-                        grade_and_advance(0)
+                with col_again:
+                    if st.button("🔴 Blackout (0)", use_container_width=True, help="Complete failure to recall"):
+                        process_sm2_review(0)
 
-                with col_med:
-                    if st.button("🟡 Medium (+1)", use_container_width=True):
-                        grade_and_advance(1)
+                with col_hard:
+                    if st.button("🟠 Hard (1)", use_container_width=True, help="Remembered only upon seeing answer"):
+                        process_sm2_review(1)
+
+                with col_good:
+                    if st.button("🟡 Good (2)", use_container_width=True, help="Correct response with hesitation"):
+                        process_sm2_review(2)
 
                 with col_easy:
-                    if st.button("🟢 Easy (+2)", use_container_width=True):
-                        grade_and_advance(2)
+                    if st.button("🟢 Easy (3)", use_container_width=True, help="Perfect, instant recall"):
+                        process_sm2_review(3)
 
     # SUB-TAB 3: AGENTIC RAG CHAT ASSISTANT
     with deck_tab_chat:
