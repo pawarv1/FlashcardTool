@@ -212,6 +212,32 @@ def delete_deck(folder_name: str, deck_name: str) -> bool:
         delete_deck_from_chroma(clean_folder, clean_deck)
         return True
 
+def get_deck_analytics(folder_name: str, deck_name: str) -> Dict[str, any]:
+    """Returns total active cards, due count, and average ease factor for a deck."""
+    clean_folder = folder_name.strip()
+    clean_deck = deck_name.strip()
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        query = """
+            SELECT 
+                COUNT(c.id) AS total_cards,
+                SUM(CASE WHEN c.next_review_at IS NULL OR c.next_review_at <= CURRENT_TIMESTAMP THEN 1 ELSE 0 END) AS due_cards,
+                AVG(c.ease_factor) AS avg_ease_factor
+            FROM cards c
+            JOIN decks d ON c.deck_id = d.id
+            JOIN folders f ON d.folder_id = f.id
+            WHERE f.name = ? AND d.name = ? 
+              AND f.is_deleted = 0 AND d.is_deleted = 0 AND c.is_deleted = 0;
+        """
+        row = cursor.execute(query, (clean_folder, clean_deck)).fetchone()
+        
+        return {
+            "total_cards": row["total_cards"] or 0,
+            "due_cards": row["due_cards"] or 0,
+            "avg_ease_factor": round(row["avg_ease_factor"] or 2.5, 2)
+        }
+    
 # -------------------------------------------------------------------
 # CARD OPERATIONS
 # -------------------------------------------------------------------

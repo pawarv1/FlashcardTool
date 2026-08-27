@@ -19,6 +19,7 @@ from storage_utils import (
     save_card_batch,
     load_deck_cards, 
     delete_card,
+    get_deck_analytics
 )
 from anki_utils import generate_anki_deck_bytes
 from agent import agent_graph
@@ -298,6 +299,27 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
 
     st.header(f"Deck: {st.session_state.current_deck}")
     st.caption(f"Folder: {st.session_state.current_folder}")
+
+    # Analytics Banner
+    analytics = get_deck_analytics(st.session_state.current_folder, st.session_state.current_deck)
+
+    col_m1, col_m2, col_m3 = st.columns(3)
+    with col_m1:
+        st.metric(label="Total Cards", value=analytics["total_cards"])
+    with col_m2:
+        st.metric(
+            label="Due for Review", 
+            value=analytics["due_cards"], 
+            delta=f"{analytics['due_cards']} Actionable" if analytics["due_cards"] > 0 else "All Caught Up!",
+            delta_color="inverse" if analytics["due_cards"] > 0 else "normal"
+        )
+    with col_m3:
+        st.metric(
+            label="Avg. Ease Factor", 
+            value=f"{analytics['avg_ease_factor']:.2f}",
+            help="Higher values indicate material that is easier for you to recall (Standard baseline is 2.50)"
+        )
+
     st.divider()
 
     deck_tab_cards, deck_tab_study, deck_tab_chat, deck_tab_quiz = st.tabs(["🎴 Cards", "📖 Study Mode", "💬 Chat Assistant", "📝 AI Quiz"])
