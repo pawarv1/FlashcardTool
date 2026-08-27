@@ -26,6 +26,7 @@ from agent import agent_graph
 from quiz_engine import generate_quiz_question, grade_user_answer
 from db import init_db, auto_heal_chroma_sync
 from sm2_utils import calculate_sm2
+from graph_utils import generate_knowledge_graph_html
 
 # 1. DATABASE & VECTOR INITIALIZATION
 @st.cache_resource
@@ -322,7 +323,9 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
 
     st.divider()
 
-    deck_tab_cards, deck_tab_study, deck_tab_chat, deck_tab_quiz = st.tabs(["🎴 Cards", "📖 Study Mode", "💬 Chat Assistant", "📝 AI Quiz"])
+    deck_tab_cards, deck_tab_study, deck_tab_chat, deck_tab_quiz, deck_tab_graph = st.tabs([
+        "🎴 Cards", "📖 Study Mode", "💬 Chat Assistant", "📝 AI Quiz", "🕸️ Knowledge Graph"
+    ])
 
     cards = load_deck_cards(st.session_state.current_folder, st.session_state.current_deck)
 
@@ -702,6 +705,43 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                             st.session_state[remed_key] = None
                             st.success(f"Added {len(cards_to_add)} remediation cards to your deck!")
                             st.rerun()
+
+    # SUB-TAB 5: VISUAL KNOWLEDGE GRAPH
+    with deck_tab_graph:
+        st.subheader("🕸️ Concept Knowledge Graph")
+        st.caption("Nodes represent flashcards; edges represent semantic similarity derived from vector embeddings.")
+
+        col_thresh, col_legend = st.columns([1, 2])
+        with col_thresh:
+            threshold = st.slider(
+                "Similarity Connection Threshold", 
+                min_value=0.20, 
+                max_value=0.80, 
+                value=0.45, 
+                step=0.05,
+                help="Lower thresholds create more connections; higher thresholds show only tightly coupled concepts."
+            )
+
+        with col_legend:
+            st.markdown(
+                "**Legend:** "
+                "🔵 `Concept` | "
+                "🟢 `Code Snippet` | "
+                "🟠 `Definition` | "
+                "🔴 `Formula` | "
+                "🟣 `Comparison` | "
+                "🩵 `Example`"
+            )
+
+        st.divider()
+
+        with st.spinner("Calculating vector distances and building interactive graph..."):
+            graph_html = generate_knowledge_graph_html(
+                folder_name=st.session_state.current_folder,
+                deck_name=st.session_state.current_deck,
+                similarity_threshold=threshold
+            )
+            st.iframe(src_doc=graph_html, height=580, scrolling=False)
 
 # VIEW 2: INDIVIDUAL FOLDER VIEW (List of Decks)
 elif st.session_state.current_folder is not None:
