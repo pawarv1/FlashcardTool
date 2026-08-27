@@ -741,7 +741,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                 deck_name=st.session_state.current_deck,
                 similarity_threshold=threshold
             )
-            st.iframe(src_doc=graph_html, height=580, scrolling=False)
+            st.iframe(src=graph_html, height=580)
 
 # VIEW 2: INDIVIDUAL FOLDER VIEW (List of Decks)
 elif st.session_state.current_folder is not None:
