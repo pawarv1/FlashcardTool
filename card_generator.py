@@ -76,3 +76,40 @@ def generate_flashcards_from_chunks(document_chunks: list[str], user_instruction
                 break
 
     return all_generated_cards
+
+def generate_remediation_cards(question: str, reference_context: str, user_answer: str, feedback: str) -> List[dict]:
+    """Generates 2-3 focused flashcards to remediate a failed quiz response."""
+    
+    system_prompt = (
+        "You are an expert tutor helping a student master a concept they just got wrong on a quiz.\n"
+        "Generate 2 to 3 high-yield remediation flashcards that specifically address the gap, "
+        "misconception, or missing detail identified in the student's answer. "
+        "Keep questions direct and answers structured for flashcard review."
+    )
+
+    user_prompt = (
+        f"MISSED QUESTION: {question}\n\n"
+        f"REFERENCE CONTEXT: {reference_context}\n\n"
+        f"STUDENT'S ANSWER: {user_answer}\n\n"
+        f"FEEDBACK / EVALUATION: {feedback}"
+    )
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("user", user_prompt)
+    ])
+    
+    llm = ChatOllama(model="llama3.1", temperature=0.3)
+    
+    structured_llm = llm.with_structured_output(FlashcardDraftResponse)
+    
+    chain = prompt | structured_llm
+    
+    try:
+        response: FlashcardDraftResponse = chain.invoke({})
+        if response and response.proposed_cards:
+            return [card.model_dump() for card in response.proposed_cards]
+    except Exception as e:
+        print(f"Warning: Remediation generation failed: {e}")
+        
+    return []

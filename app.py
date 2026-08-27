@@ -4,7 +4,7 @@ from typing import get_args
 import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage
 from document_parser import get_markdown_chunks
-from card_generator import generate_flashcards_from_chunks, CardTypeEnum
+from card_generator import generate_flashcards_from_chunks, CardTypeEnum, generate_remediation_cards
 from vector_utils import check_candidate_duplicates
 from storage_utils import (
     create_folder, 
@@ -625,7 +625,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                 grade_pct = current_grade.get("grade_percent", 0)
                 feedback = current_grade.get("feedback", "")
 
-                if score_str == "Pass":
+                if score_str == "Pass" and grade_pct >= 70:
                     st.success(f"**Score:** {score_str} ({grade_pct}%)")
                 else:
                     st.warning(f"**Score:** {score_str} ({grade_pct}%)")
@@ -634,6 +634,74 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                 
                 with st.expander("📖 View Reference Context"):
                     st.write(current_quiz.get("reference_context", ""))
+
+                # Weak Concept Remediation Trigger
+                if score_str != "Pass" or grade_pct < 70:
+                    st.divider()
+                    st.subheader("🩹 Weak Concept Remediation")
+                    st.info("Looks like there's a knowledge gap here. Generate targeted flashcards to patch this concept?")
+
+                    remed_key = f"remed_cards_{st.session_state.current_folder}_{st.session_state.current_deck}"
+                    if remed_key not in st.session_state:
+                        st.session_state[remed_key] = None
+
+                    if st.button("⚡ Generate Remediation Cards", type="primary"):
+                        with st.spinner("Analyzing knowledge gap and drafting targeted cards..."):
+                            raw_remed_cards = generate_remediation_cards(
+                                question=current_quiz.get("question", ""),
+                                reference_context=current_quiz.get("reference_context", ""),
+                                user_answer=user_quiz_answer.strip(),
+                                feedback=feedback
+                            )
+                            # Run duplicate detection against existing cards in ChromaDB
+                            flagged_remed_cards = check_candidate_duplicates(
+                                candidate_cards=raw_remed_cards,
+                                folder_name=st.session_state.current_folder,
+                                deck_name=st.session_state.current_deck
+                            )
+                            st.session_state[remed_key] = flagged_remed_cards
+                            st.rerun()
+
+                    # Render Remediation Draft Table
+                    if st.session_state[remed_key]:
+                        st.markdown("#### Drafted Remediation Cards")
+                        selected_remed_indices = []
+                        
+                        for i, card in enumerate(st.session_state[remed_key]):
+                            is_dup = card.get("is_duplicate", False)
+                            matched_q = card.get("matched_existing_front", "")
+
+                            with st.container(border=True):
+                                if is_dup:
+                                    st.warning(f"⚠️ Potential Duplicate of: *\"{matched_q}\"*")
+
+                                col_chk, col_card = st.columns([1, 10])
+                                with col_chk:
+                                    inc = st.checkbox("Import", value=not is_dup, key=f"remed_chk_{i}")
+                                    if inc:
+                                        selected_remed_indices.append(i)
+                                with col_card:
+                                    st.markdown(f"**Front:** {card.get('front', '')}")
+                                    st.markdown(f"**Back:** {card.get('back', '')}")
+                                    if card.get("code_block"):
+                                        st.code(card.get("code_block"))
+                                    if card.get("explanation"):
+                                        st.caption(f"**Explanation:** {card.get('explanation')}")
+
+                        if st.button("💾 Add Selected Remediation Cards to Deck", type="primary", disabled=not selected_remed_indices):
+                            cards_to_add = [st.session_state[remed_key][idx] for idx in selected_remed_indices]
+                            for c in cards_to_add:
+                                c["source_type"] = "quiz_remediation"
+                                c["mastery_level"] = 0
+                            
+                            save_card_batch(
+                                folder_name=st.session_state.current_folder,
+                                deck_name=st.session_state.current_deck,
+                                cards=cards_to_add
+                            )
+                            st.session_state[remed_key] = None
+                            st.success(f"Added {len(cards_to_add)} remediation cards to your deck!")
+                            st.rerun()
 
 # VIEW 2: INDIVIDUAL FOLDER VIEW (List of Decks)
 elif st.session_state.current_folder is not None:
