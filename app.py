@@ -29,6 +29,20 @@ from db import init_db, auto_heal_chroma_sync
 from sm2_utils import calculate_sm2
 from graph_utils import generate_knowledge_graph_html
 import pandas as pd
+import io
+from gtts import gTTS
+
+def generate_tts_audio_bytes(text: str, lang: str = "en") -> io.BytesIO:
+    """Converts a text string into MP3 audio bytes in memory."""
+    clean_text = text.strip()
+    if not clean_text:
+        return None
+    
+    tts = gTTS(text=clean_text, lang=lang, slow=False)
+    audio_fp = io.BytesIO()
+    tts.write_to_fp(audio_fp)
+    audio_fp.seek(0)
+    return audio_fp
 
 # 1. DATABASE & VECTOR INITIALIZATION
 @st.cache_resource
@@ -468,19 +482,44 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                 
                 st.caption(f"Type: `{card_type}` | Repetitions: {reps} | Next Interval: {interval}d")
                 
-                st.markdown("### Question / Prompt")
-                st.write(curr_card.get("front", ""))
-                if curr_card.get("code_block"):
-                    st.code(curr_card.get("code_block"))
+                # Question Section & Audio Trigger
+                col_q_text, col_q_audio = st.columns([4, 1])
+                with col_q_text:
+                    st.markdown("### Question / Prompt")
+                    st.write(curr_card.get("front", ""))
+                    if curr_card.get("code_block"):
+                        st.code(curr_card.get("code_block"))
 
+                with col_q_audio:
+                    if st.button("🔊 Read Question", key=f"tts_q_{curr_card.get('card_id')}"):
+                        with st.spinner("Generating audio..."):
+                            q_audio = generate_tts_audio_bytes(curr_card.get("front", ""))
+                            if q_audio:
+                                st.audio(q_audio, format="audio/mp3", autoplay=True)
+
+                # Answer Section & Audio Trigger
                 if st.session_state.study_is_flipped:
                     st.divider()
-                    st.markdown("### Answer / Explanation")
-                    st.write(curr_card.get("back", ""))
-                    if curr_card.get("explanation"):
-                        st.info(curr_card.get("explanation"))
-                    if curr_card.get("media_link"):
-                        render_media(curr_card.get("media_link"))
+                    col_a_text, col_a_audio = st.columns([4, 1])
+                    with col_a_text:
+                        st.markdown("### Answer / Explanation")
+                        st.write(curr_card.get("back", ""))
+                        if curr_card.get("explanation"):
+                            st.info(curr_card.get("explanation"))
+                        if curr_card.get("media_link"):
+                            render_media(curr_card.get("media_link"))
+
+                    with col_a_audio:
+                        if st.button("🔊 Read Answer", key=f"tts_a_{curr_card.get('card_id')}"):
+                            with st.spinner("Generating audio..."):
+                                # Reads back text plus optional explanation context
+                                full_answer_text = curr_card.get("back", "")
+                                if curr_card.get("explanation"):
+                                    full_answer_text += f". Explanation: {curr_card.get('explanation')}"
+                                
+                                a_audio = generate_tts_audio_bytes(full_answer_text)
+                                if a_audio:
+                                    st.audio(a_audio, format="audio/mp3", autoplay=True)
 
             # 4. Navigation Buttons
             col_prev, col_flip, col_next = st.columns([1, 2, 1])
