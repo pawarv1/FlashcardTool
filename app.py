@@ -33,6 +33,8 @@ import io
 from gtts import gTTS
 import os
 from media_utils import process_and_save_media
+from backup_utils import create_system_backup_zip, restore_system_from_zip
+from datetime import datetime
 
 def generate_tts_audio_bytes(text: str, lang: str = "en") -> io.BytesIO:
     """Converts a text string into MP3 audio bytes in memory."""
@@ -45,6 +47,24 @@ def generate_tts_audio_bytes(text: str, lang: str = "en") -> io.BytesIO:
     tts.write_to_fp(audio_fp)
     audio_fp.seek(0)
     return audio_fp
+
+def render_media(media_path: str):
+    if not media_path:
+        return
+    
+    clean_path = media_path.lower()
+    image_exts = [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+    
+    # Check if path is a web URL or local file path
+    is_web_url = clean_path.startswith("http://") or clean_path.startswith("https://")
+    
+    if any(clean_path.endswith(ext) for ext in image_exts) or is_web_url:
+        if os.path.exists(media_path) or is_web_url:
+            st.image(media_path, use_column_width=True)
+        else:
+            st.caption(f"⚠️ Attachment not found: `{media_path}`")
+    else:
+        st.markdown(f"🔗 [View Attached Media]({media_path})")
 
 # 1. DATABASE & VECTOR INITIALIZATION
 @st.cache_resource
@@ -79,23 +99,47 @@ if "study_card_index" not in st.session_state:
 if "study_is_flipped" not in st.session_state:
     st.session_state.study_is_flipped = False
 
-def render_media(media_path: str):
-    if not media_path:
-        return
-    
-    clean_path = media_path.lower()
-    image_exts = [".png", ".jpg", ".jpeg", ".gif", ".webp"]
-    
-    # Check if path is a web URL or local file path
-    is_web_url = clean_path.startswith("http://") or clean_path.startswith("https://")
-    
-    if any(clean_path.endswith(ext) for ext in image_exts) or is_web_url:
-        if os.path.exists(media_path) or is_web_url:
-            st.image(media_path, use_column_width=True)
-        else:
-            st.caption(f"⚠️ Attachment not found: `{media_path}`")
-    else:
-        st.markdown(f"🔗 [View Attached Media]({media_path})")
+# --- SIDEBAR: SYSTEM MAINTENANCE & BACKUP ---
+with st.sidebar:
+    st.divider()
+    with st.expander("⚙️ Backup & Restore Data", expanded=False):
+        st.caption("Export or restore your complete database, vector collections, and media attachments.")
+
+        # 1. BACKUP GENERATION & DOWNLOAD
+        st.markdown("#### 📦 Export System Backup")
+        if st.button("Generate Backup ZIP", type="primary", use_container_width=True):
+            with st.spinner("Bundling database, vectors, and media assets..."):
+                zip_buffer = create_system_backup_zip()
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup_filename = f"flashcard_app_backup_{timestamp}.zip"
+                
+                st.download_button(
+                    label="💾 Download Backup Archive",
+                    data=zip_buffer,
+                    file_name=backup_filename,
+                    mime="application/zip",
+                    use_container_width=True
+                )
+
+        st.divider()
+
+        # 2. RESTORE FROM ZIP UPLOAD
+        st.markdown("#### 📂 Restore System Backup")
+        uploaded_backup = st.file_uploader(
+            "Upload Backup ZIP", 
+            type=["zip"], 
+            key="restore_zip_uploader"
+        )
+        
+        if uploaded_backup:
+            st.warning("⚠️ Restoring will overwrite existing card data, media, and study statistics!")
+            if st.button("Confirm & Restore Data", type="primary", use_container_width=True):
+                with st.spinner("Restoring files from backup archive..."):
+                    if restore_system_from_zip(uploaded_backup):
+                        st.success("System restored successfully! Reloading...")
+                        st.rerun()
+                    else:
+                        st.error("Failed to restore system backup. Ensure it is a valid backup ZIP.")
 
 # DIALOG POPUPS
 @st.dialog("New Folder")
