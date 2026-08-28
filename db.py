@@ -7,8 +7,9 @@ def get_db_connection():
     """Returns a SQLite connection object with dict-like row formatting and FK constraints enabled."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    # Enforce SQLite foreign key constraints
+    # Enforce Foreign Keys & Enable Write-Ahead Logging
     conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("PRAGMA journal_mode = WAL;")
     return conn
 
 def init_db():

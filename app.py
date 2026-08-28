@@ -31,6 +31,8 @@ from graph_utils import generate_knowledge_graph_html
 import pandas as pd
 import io
 from gtts import gTTS
+import os
+from media_utils import process_and_save_media
 
 def generate_tts_audio_bytes(text: str, lang: str = "en") -> io.BytesIO:
     """Converts a text string into MP3 audio bytes in memory."""
@@ -77,14 +79,23 @@ if "study_card_index" not in st.session_state:
 if "study_is_flipped" not in st.session_state:
     st.session_state.study_is_flipped = False
 
-def render_media(media_url: str):
-    if not media_url:
+def render_media(media_path: str):
+    if not media_path:
         return
-    clean_url = media_url.lower()
-    if any(clean_url.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".gif", ".webp"]):
-        st.image(media_url, use_column_width=True)
+    
+    clean_path = media_path.lower()
+    image_exts = [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+    
+    # Check if path is a web URL or local file path
+    is_web_url = clean_path.startswith("http://") or clean_path.startswith("https://")
+    
+    if any(clean_path.endswith(ext) for ext in image_exts) or is_web_url:
+        if os.path.exists(media_path) or is_web_url:
+            st.image(media_path, use_column_width=True)
+        else:
+            st.caption(f"⚠️ Attachment not found: `{media_path}`")
     else:
-        st.markdown(f"🔗 [View Attached Media]({media_url})")
+        st.markdown(f"🔗 [View Attached Media]({media_path})")
 
 # DIALOG POPUPS
 @st.dialog("New Folder")
@@ -130,17 +141,29 @@ def new_card_popup():
     back = st.text_area("Back (Answer / Summary)")
     code_block = st.text_area("Code Block (Optional)", help="Paste any relevant code snippet here")
     explanation = st.text_area("Explanation (Optional)", help="Additional detail or context for review")
-    media_link = st.text_input("Media Link / URL (Optional)", help="Paste image or reference URL")
+
+    uploaded_media_file = st.file_uploader(
+        "Upload Media Attachment (Image/Diagram)", 
+        type=["png", "jpg", "jpeg", "webp", "gif"]
+    )
+    media_link_input = st.text_input("OR Media Link / URL (Optional)")
 
     if st.button("Save Card", type="primary"):
         if front.strip() and back.strip():
+            final_media_path = None
+            
+            if uploaded_media_file:
+                final_media_path = process_and_save_media(uploaded_media_file)
+            elif media_link_input.strip():
+                final_media_path = media_link_input.strip()
+
             card_data = {
                 "card_type": card_type,
                 "front": front.strip(),
                 "back": back.strip(),
                 "code_block": code_block.strip() if code_block.strip() else None,
                 "explanation": explanation.strip() if explanation.strip() else None,
-                "media_link": media_link.strip() if media_link.strip() else None,
+                "media_link": final_media_path,
                 "source_type": "manual_entry",
                 "mastery_level": 0
             }
@@ -164,7 +187,23 @@ def edit_card_popup(card: dict):
     updated_back = st.text_area("Back (Answer / Summary)", value=card.get("back", ""))
     updated_code = st.text_area("Code Block (Optional)", value=card.get("code_block") or "")
     updated_explanation = st.text_area("Explanation (Optional)", value=card.get("explanation") or "")
-    updated_media = st.text_input("Media Link / URL (Optional)", value=card.get("media_link") or "")
+    
+    # Render existing media preview if present
+    existing_media = card.get("media_link")
+    if existing_media:
+        st.markdown("**Current Media Attachment:**")
+        render_media(existing_media)
+    
+    uploaded_media_file = st.file_uploader(
+        "Replace / Upload Media Attachment", 
+        type=["png", "jpg", "jpeg", "webp", "gif"],
+        key=f"edit_file_{card.get('card_id')}"
+    )
+    updated_media_url = st.text_input(
+        "OR Media Link / URL", 
+        value=existing_media or "", 
+        key=f"edit_url_{card.get('card_id')}"
+    )
 
     st.divider()
 
@@ -173,6 +212,14 @@ def edit_card_popup(card: dict):
     with col_save:
         if st.button("Save Changes", type="primary", use_container_width=True):
             if updated_front.strip() and updated_back.strip():
+                final_media_path = existing_media
+                if uploaded_media_file:
+                    final_media_path = process_and_save_media(uploaded_media_file)
+                elif updated_media_url.strip():
+                    final_media_path = updated_media_url.strip()
+                else:
+                    final_media_path = None
+
                 updated_card = {
                     "card_id": card.get("card_id"),
                     "card_type": updated_type,
@@ -180,7 +227,7 @@ def edit_card_popup(card: dict):
                     "back": updated_back.strip(),
                     "code_block": updated_code.strip() if updated_code.strip() else None,
                     "explanation": updated_explanation.strip() if updated_explanation.strip() else None,
-                    "media_link": updated_media.strip() if updated_media.strip() else None,
+                    "media_link": final_media_path,
                     "source_type": card.get("source_type", "manual_entry"),
                     "mastery_level": card.get("mastery_level", 0)
                 }
