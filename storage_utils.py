@@ -1,15 +1,7 @@
 import uuid
-from typing import List, Dict, Optional
+from typing import List, Dict
 from db import get_db_connection
-from vector_utils import (
-    upsert_card_to_chroma,
-    delete_card_from_chroma,
-    delete_deck_from_chroma,
-    delete_folder_from_chroma,
-    rename_deck_in_chroma,
-    rename_folder_in_chroma,
-    get_collection
-)
+from vector_utils import upsert_card_to_chroma, delete_card_from_chroma, delete_deck_from_chroma, delete_folder_from_chroma, rename_deck_in_chroma, rename_folder_in_chroma,get_collection
 
 # -------------------------------------------------------------------
 # FOLDER OPERATIONS
@@ -32,16 +24,11 @@ def create_folder(folder_name: str) -> bool:
 
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        existing = cursor.execute(
-            "SELECT id, is_deleted FROM folders WHERE name = ?;", (clean_name,)
-        ).fetchone()
+        existing = cursor.execute("SELECT id, is_deleted FROM folders WHERE name = ?;", (clean_name,)).fetchone()
 
         if existing:
             if existing["is_deleted"] == 1:
-                # Restore the folder
-                cursor.execute(
-                    "UPDATE folders SET is_deleted = 0 WHERE id = ?;", (existing["id"],)
-                )
+                cursor.execute("UPDATE folders SET is_deleted = 0 WHERE id = ?;", (existing["id"],))
                 conn.commit()
                 return True
             return False
@@ -61,10 +48,7 @@ def rename_folder(old_name: str, new_name: str) -> bool:
     with get_db_connection() as conn:
         cursor = conn.cursor()
         try:
-            cursor.execute(
-                "UPDATE folders SET name = ? WHERE name = ? AND is_deleted = 0;",
-                (clean_new, clean_old)
-            )
+            cursor.execute("UPDATE folders SET name = ? WHERE name = ? AND is_deleted = 0;",(clean_new, clean_old))
             if cursor.rowcount > 0:
                 conn.commit()
                 rename_folder_in_chroma(clean_old, clean_new)
@@ -78,10 +62,8 @@ def delete_folder(folder_name: str) -> bool:
     clean_name = folder_name.strip()
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        
-        folder = cursor.execute(
-            "SELECT id FROM folders WHERE name = ? AND is_deleted = 0;", (clean_name,)
-        ).fetchone()
+
+        folder = cursor.execute("SELECT id FROM folders WHERE name = ? AND is_deleted = 0;", (clean_name,)).fetchone()
 
         if not folder:
             return False
@@ -131,34 +113,23 @@ def create_deck(folder_name: str, deck_name: str) -> bool:
     with get_db_connection() as conn:
         cursor = conn.cursor()
         
-        folder = cursor.execute(
-            "SELECT id FROM folders WHERE name = ? AND is_deleted = 0;", (clean_folder,)
-        ).fetchone()
+        folder = cursor.execute("SELECT id FROM folders WHERE name = ? AND is_deleted = 0;", (clean_folder,)).fetchone()
 
         if not folder:
             return False
 
         folder_id = folder["id"]
 
-        existing = cursor.execute(
-            "SELECT id, is_deleted FROM decks WHERE folder_id = ? AND name = ?;",
-            (folder_id, clean_deck)
-        ).fetchone()
+        existing = cursor.execute("SELECT id, is_deleted FROM decks WHERE folder_id = ? AND name = ?;",(folder_id, clean_deck)).fetchone()
 
         if existing:
             if existing["is_deleted"] == 1:
-                # Restore the deck
-                cursor.execute(
-                    "UPDATE decks SET is_deleted = 0 WHERE id = ?;", (existing["id"],)
-                )
+                cursor.execute("UPDATE decks SET is_deleted = 0 WHERE id = ?;", (existing["id"],))
                 conn.commit()
                 return True
             return False
 
-        cursor.execute(
-            "INSERT INTO decks (folder_id, name) VALUES (?, ?);",
-            (folder_id, clean_deck)
-        )
+        cursor.execute("INSERT INTO decks (folder_id, name) VALUES (?, ?);",(folder_id, clean_deck))
         conn.commit()
         return True
 
@@ -332,7 +303,6 @@ def save_card(folder_name: str, deck_name: str, card_data: Dict) -> bool:
         ))
         conn.commit()
 
-        # Update ChromaDB vector store
         card_data["card_id"] = card_id
         try:
             upsert_card_to_chroma(clean_folder, clean_deck, card_data)
@@ -451,3 +421,64 @@ def delete_card(card_id: str) -> bool:
             delete_card_from_chroma(card_id)
             return True
     return False
+
+# -------------------------------------------------------------------
+# QUIZ OPERATIONS
+# -------------------------------------------------------------------
+
+def log_quiz_attempt(folder_name: str, deck_name: str, question: str, user_answer: str, score_label: str, grade_percent: int, feedback: str) -> bool:
+    """Logs a completed quiz attempt into SQLite."""
+    clean_folder = folder_name.strip()
+    clean_deck = deck_name.strip()
+    attempt_id = str(uuid.uuid4())
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO quiz_history (
+                id, folder_name, deck_name, question, user_answer, 
+                score_label, grade_percent, feedback
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        """, (
+            attempt_id, clean_folder, clean_deck, question, 
+            user_answer, score_label, grade_percent, feedback
+        ))
+        conn.commit()
+        return True
+
+def get_quiz_analytics(folder_name: str, deck_name: str) -> Dict[str, any]:
+    """Retrieves aggregated quiz statistics and history logs for a specific deck."""
+    clean_folder = folder_name.strip()
+    clean_deck = deck_name.strip()
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        agg_row = cursor.execute("""
+            SELECT 
+                COUNT(*) AS total_quizzes,
+                AVG(grade_percent) AS avg_score,
+                SUM(CASE WHEN grade_percent >= 70 THEN 1 ELSE 0 END) AS passed_quizzes
+            FROM quiz_history
+            WHERE folder_name = ? AND deck_name = ?;
+        """, (clean_folder, clean_deck)).fetchone()
+
+        history_rows = cursor.execute("""
+            SELECT question, user_answer, score_label, grade_percent, feedback, created_at
+            FROM quiz_history
+            WHERE folder_name = ? AND deck_name = ?
+            ORDER BY created_at DESC
+            LIMIT 20;
+        """, (clean_folder, clean_deck)).fetchall()
+
+        total = agg_row["total_quizzes"] or 0
+        avg_score = round(agg_row["avg_score"] or 0, 1)
+        passed = agg_row["passed_quizzes"] or 0
+        pass_rate = round((passed / total) * 100, 1) if total > 0 else 0.0
+
+        return {
+            "total_quizzes": total,
+            "avg_score": avg_score,
+            "pass_rate": pass_rate,
+            "history": [dict(r) for r in history_rows]
+        }

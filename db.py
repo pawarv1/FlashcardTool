@@ -1,5 +1,4 @@
 import sqlite3
-import os
 from vector_utils import get_collection
 
 DB_PATH = "./study_assistant.db"
@@ -63,11 +62,29 @@ def init_db():
             );
         """)
 
+        # 4. Quiz History Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS quiz_history (
+            id TEXT PRIMARY KEY,
+            folder_name TEXT NOT NULL,
+            deck_name TEXT NOT NULL,
+            question TEXT NOT NULL,
+            user_answer TEXT,
+            score_label TEXT,
+            grade_percent INTEGER NOT NULL,
+            feedback TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
         # Speed up common queries with indexes
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_decks_folder ON decks(folder_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_cards_deck ON cards(deck_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_cards_sync ON cards(synced_to_chroma);")
-        
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_quiz_history_lookup 
+            ON quiz_history(folder_name, deck_name, created_at DESC);
+        """)
         conn.commit()
     print("SQLite database initialized successfully.")
 

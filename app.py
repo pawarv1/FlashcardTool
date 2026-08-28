@@ -1,5 +1,3 @@
-import os
-import random
 from typing import get_args
 import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage
@@ -19,7 +17,9 @@ from storage_utils import (
     save_card_batch,
     load_deck_cards, 
     delete_card,
-    get_deck_analytics
+    get_deck_analytics,
+    log_quiz_attempt,
+    get_quiz_analytics
 )
 from anki_utils import generate_anki_deck_bytes
 from agent import agent_graph
@@ -617,6 +617,17 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                             user_answer=user_quiz_answer.strip()
                         )
                         st.session_state[grade_key] = evaluation
+                        
+                        # Log to SQLite quiz_history
+                        log_quiz_attempt(
+                            folder_name=st.session_state.current_folder,
+                            deck_name=st.session_state.current_deck,
+                            question=current_quiz.get("question", ""),
+                            user_answer=user_quiz_answer.strip(),
+                            score_label=evaluation.get("score", "Needs Review"),
+                            grade_percent=evaluation.get("grade_percent", 0),
+                            feedback=evaluation.get("feedback", "")
+                        )
                         st.rerun()
 
             current_grade = st.session_state[grade_key]
@@ -705,6 +716,44 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                             st.session_state[remed_key] = None
                             st.success(f"Added {len(cards_to_add)} remediation cards to your deck!")
                             st.rerun()
+
+        st.divider()
+        with st.expander("📈 Quiz Performance Dashboard & History", expanded=False):
+            quiz_stats = get_quiz_analytics(st.session_state.current_folder, st.session_state.current_deck)
+
+            if quiz_stats["total_quizzes"] == 0:
+                st.info("No quiz attempts recorded yet. Submit your first answer above to start tracking performance!")
+            else:
+                # Metric Columns
+                col_q1, col_q2, col_q3 = st.columns(3)
+                with col_q1:
+                    st.metric("Total Quizzes Taken", quiz_stats["total_quizzes"])
+                with col_q2:
+                    st.metric("Average Score", f"{quiz_stats['avg_score']}%")
+                with col_q3:
+                    st.metric("Pass Rate (≥70%)", f"{quiz_stats['pass_rate']}%")
+
+                # Score Trend Line Chart
+                scores = [h["grade_percent"] for h in reversed(quiz_stats["history"])]
+                if len(scores) > 1:
+                    st.markdown("#### Score Progression")
+                    st.line_chart(scores)
+
+                # Recent Attempts Table
+                st.markdown("#### Recent Attempts")
+                for attempt in quiz_stats["history"]:
+                    with st.container(border=True):
+                        c_head, c_score = st.columns([4, 1])
+                        with c_head:
+                            st.markdown(f"**Q:** {attempt['question']}")
+                            st.caption(f"Date: {attempt['created_at']}")
+                        with c_score:
+                            pct = attempt["grade_percent"]
+                            badge_color = "🟢" if pct >= 70 else "🔴"
+                            st.markdown(f"### {badge_color} {pct}%")
+
+                        st.markdown(f"**Your Answer:** {attempt['user_answer']}")
+                        st.caption(f"**Feedback:** {attempt['feedback']}")
 
     # SUB-TAB 5: VISUAL KNOWLEDGE GRAPH
     with deck_tab_graph:
