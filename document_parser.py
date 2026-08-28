@@ -1,6 +1,49 @@
 import io
 import os
 from markitdown import MarkItDown
+import pandas as pd
+
+def parse_csv_direct_to_cards(uploaded_file) -> list[dict]:
+    """
+    Directly reads a CSV file and converts rows into card dictionaries,
+    bypassing LLM generation to preserve exact text.
+    """
+    try:
+        df = pd.read_csv(uploaded_file)
+        
+        df.columns = [str(col).strip().lower() for col in df.columns]
+        
+        front_col = next((c for c in df.columns if c in ["front", "question", "prompt", "term"]), df.columns[0])
+        back_col = next((c for c in df.columns if c in ["back", "answer", "definition", "summary"]), df.columns[1] if len(df.columns) > 1 else df.columns[0])
+        
+        cards = []
+        for _, row in df.iterrows():
+            front_text = str(row.get(front_col, "")).strip()
+            back_text = str(row.get(back_col, "")).strip()
+            
+            if not front_text or front_text.lower() == "nan" or not back_text or back_text.lower() == "nan":
+                continue
+                
+            code_block = str(row.get("code_block", "")).strip() if "code_block" in df.columns and pd.notna(row.get("code_block")) else None
+            explanation = str(row.get("explanation", "")).strip() if "explanation" in df.columns and pd.notna(row.get("explanation")) else None
+            card_type = str(row.get("card_type", "concept")).strip() if "card_type" in df.columns and pd.notna(row.get("card_type")) else "concept"
+
+            cards.append({
+                "card_type": card_type,
+                "front": front_text,
+                "back": back_text,
+                "code_block": code_block,
+                "explanation": explanation,
+                "media_link": None,
+                "source_type": f"csv_import:{uploaded_file.name}",
+                "mastery_level": 0
+            })
+            
+        return cards
+        
+    except Exception as e:
+        print(f"Error parsing direct CSV: {e}")
+        return []
 
 def extract_text_from_file(uploaded_file) -> str:
     """

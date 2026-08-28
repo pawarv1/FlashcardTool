@@ -1,7 +1,7 @@
 from typing import get_args
 import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage
-from document_parser import get_markdown_chunks
+from document_parser import get_markdown_chunks, parse_csv_direct_to_cards
 from card_generator import generate_flashcards_from_chunks, CardTypeEnum, generate_remediation_cards
 from vector_utils import check_candidate_duplicates
 from storage_utils import (
@@ -308,21 +308,37 @@ def ingest_document_popup():
         st.session_state.draft_cards = None
 
     if st.button("⚙️ Parse & Generate Drafts", type="primary", disabled=not uploaded_file):
-        with st.spinner("Parsing document and drafting flashcards via Llama 3.1..."):
-            document_chunks = get_markdown_chunks(uploaded_file)
-            
-            raw_drafts = generate_flashcards_from_chunks(
-                document_chunks=document_chunks, 
-                user_instructions=instructions, 
-                target_count=num_cards
-            )
-            
-            flagged_drafts = check_candidate_duplicates(
-                candidate_cards=raw_drafts,
-                folder_name=st.session_state.current_folder,
-                deck_name=st.session_state.current_deck
-            )
-            st.session_state.draft_cards = flagged_drafts
+        file_ext = os.path.splitext(uploaded_file.name)[1].lower()
+
+        # PATH A: Structured CSV Import (Direct, Instant, Bypasses LLM)
+        if file_ext == ".csv":
+            with st.spinner("Parsing CSV rows directly into flashcards..."):
+                raw_drafts = parse_csv_direct_to_cards(uploaded_file)
+                
+                flagged_drafts = check_candidate_duplicates(
+                    candidate_cards=raw_drafts,
+                    folder_name=st.session_state.current_folder,
+                    deck_name=st.session_state.current_deck
+                )
+                st.session_state.draft_cards = flagged_drafts
+
+        # PATH B: Unstructured Document Import (PDF, DOCX, TXT via Llama 3.1)
+        else:
+            with st.spinner("Parsing document and drafting flashcards via Llama 3.1..."):
+                document_chunks = get_markdown_chunks(uploaded_file)
+                
+                raw_drafts = generate_flashcards_from_chunks(
+                    document_chunks=document_chunks, 
+                    user_instructions=instructions, 
+                    target_count=num_cards
+                )
+                
+                flagged_drafts = check_candidate_duplicates(
+                    candidate_cards=raw_drafts,
+                    folder_name=st.session_state.current_folder,
+                    deck_name=st.session_state.current_deck
+                )
+                st.session_state.draft_cards = flagged_drafts
 
     # DRAFTING TABLE (HUMAN-IN-THE-LOOP REVIEW)
     if st.session_state.draft_cards:
