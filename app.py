@@ -19,7 +19,8 @@ from storage_utils import (
     delete_card,
     get_deck_analytics,
     log_quiz_attempt,
-    get_quiz_analytics
+    get_quiz_analytics,
+    get_review_forecast
 )
 from anki_utils import generate_anki_deck_bytes
 from agent import agent_graph
@@ -27,6 +28,7 @@ from quiz_engine import generate_quiz_question, grade_user_answer
 from db import init_db, auto_heal_chroma_sync
 from sm2_utils import calculate_sm2
 from graph_utils import generate_knowledge_graph_html
+import pandas as pd
 
 # 1. DATABASE & VECTOR INITIALIZATION
 @st.cache_resource
@@ -301,7 +303,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
     st.header(f"Deck: {st.session_state.current_deck}")
     st.caption(f"Folder: {st.session_state.current_folder}")
 
-    # Analytics Banner
+    # ANALYTICS BANNER
     analytics = get_deck_analytics(st.session_state.current_folder, st.session_state.current_deck)
 
     col_m1, col_m2, col_m3 = st.columns(3)
@@ -320,6 +322,38 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
             value=f"{analytics['avg_ease_factor']:.2f}",
             help="Higher values indicate material that is easier for you to recall (Standard baseline is 2.50)"
         )
+
+    # WORKLOAD FORECAST EXPANDER WITH TIMEFRAME SELECTOR
+    with st.expander("📅 Review Workload Forecast", expanded=False):
+        col_fc_info, col_fc_select = st.columns([3, 1])
+        
+        with col_fc_info:
+            st.caption("Distribution of cards scheduled for review based on SM-2 interval calculations:")
+        
+        with col_fc_select:
+            forecast_days = st.selectbox(
+                "Forecast Window",
+                options=[7, 14, 30],
+                format_func=lambda x: f"Next {x} Days",
+                index=0,
+                key=f"fc_days_{st.session_state.current_folder}_{st.session_state.current_deck}"
+            )
+
+        forecast_data = get_review_forecast(
+            st.session_state.current_folder, 
+            st.session_state.current_deck, 
+            days=forecast_days
+        )
+
+        if not forecast_data:
+            st.info("No cards in this deck to forecast.")
+        else:
+            # Convert dict to a DataFrame and preserve explicit chronological category order
+            df_forecast = pd.DataFrame(list(forecast_data.items()), columns=["Date", "Due Cards"])
+            df_forecast["Date"] = pd.Categorical(df_forecast["Date"], categories=list(forecast_data.keys()), ordered=True)
+            df_forecast = df_forecast.set_index("Date")
+
+            st.bar_chart(df_forecast)
 
     st.divider()
 

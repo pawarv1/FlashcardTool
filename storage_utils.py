@@ -2,6 +2,7 @@ import uuid
 from typing import List, Dict
 from db import get_db_connection
 from vector_utils import upsert_card_to_chroma, delete_card_from_chroma, delete_deck_from_chroma, delete_folder_from_chroma, rename_deck_in_chroma, rename_folder_in_chroma,get_collection
+from datetime import datetime, timedelta, date
 
 # -------------------------------------------------------------------
 # FOLDER OPERATIONS
@@ -208,6 +209,64 @@ def get_deck_analytics(folder_name: str, deck_name: str) -> Dict[str, any]:
             "due_cards": row["due_cards"] or 0,
             "avg_ease_factor": round(row["avg_ease_factor"] or 2.5, 2)
         }
+
+def get_review_forecast(folder_name: str, deck_name: str, days: int = 7) -> Dict[str, int]:
+    """
+    Groups active cards by their next_review_at date over a future window (default 7 days).
+    Returns a dictionary mapping date labels to due card counts.
+    """
+    clean_folder = folder_name.strip()
+    clean_deck = deck_name.strip()
+
+    cards = load_deck_cards(clean_folder, clean_deck)
+    if not cards:
+        return {}
+
+    today = date.today()
+    
+    forecast_buckets = {}
+    
+    # 1. Bucket for Overdue / Due Today
+    forecast_buckets["Overdue / Today"] = 0
+    
+    # 2. Daily buckets for upcoming days
+    for i in range(1, days):
+        day_date = today + timedelta(days=i)
+        day_label = day_date.strftime("%a (%m/%d)")
+        forecast_buckets[day_label] = 0
+
+    # 3. Bucket for future reviews beyond the forecast window
+    forecast_buckets[f"+{days} Days+"] = 0
+
+    for card in cards:
+        next_review_str = card.get("next_review_at")
+        
+        # If no date set or already past/today -> Overdue / Today
+        if not next_review_str:
+            forecast_buckets["Overdue / Today"] += 1
+            continue
+
+        try:
+            card_date = datetime.strptime(next_review_str.split(".")[0].split("T")[0], "%Y-%m-%d").date()
+        except Exception:
+            # Fallback for unexpected date formats
+            forecast_buckets["Overdue / Today"] += 1
+            continue
+
+        days_diff = (card_date - today).days
+
+        if days_diff <= 0:
+            forecast_buckets["Overdue / Today"] += 1
+        elif 1 <= days_diff < days:
+            day_label = card_date.strftime("%a (%m/%d)")
+            if day_label in forecast_buckets:
+                forecast_buckets[day_label] += 1
+            else:
+                forecast_buckets["Overdue / Today"] += 1
+        else:
+            forecast_buckets[f"+{days} Days+"] += 1
+
+    return forecast_buckets
     
 # -------------------------------------------------------------------
 # CARD OPERATIONS
