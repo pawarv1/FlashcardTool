@@ -1,3 +1,4 @@
+import math
 from typing import List, Optional, Literal
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
@@ -8,12 +9,13 @@ CardTypeEnum = Literal["concept", "code_snippet", "definition", "formula", "comp
 class ProposedCard(BaseModel):
     card_type: CardTypeEnum = Field(
         default="concept",
-        description="Choose exact match: 'concept', 'code_snippet', 'definition', 'formula', 'comparison' or 'example"
+        description="Choose exact match: 'concept', 'code_snippet', 'definition', 'formula', 'comparison' or 'example'"
     )
     front: str = Field(description="Clear, concise active-recall question or prompt")
     code_block: Optional[str] = Field(default=None, description="Optional code snippet relevant to question")
     back: str = Field(description="Direct, accurate answer")
     explanation: Optional[str] = Field(default=None, description="Memory hook or context snippet from source")
+    media_link: Optional[str] = Field(default=None, description="Optional media URL or image path")
 
 class FlashcardDraftResponse(BaseModel):
     proposed_cards: List[ProposedCard]
@@ -41,16 +43,16 @@ def generate_flashcards_from_chunks(document_chunks: list[str], user_instruction
 
     chain = prompt | structured_llm
 
-    # Cap requests to a max of 4 cards per LLM call for JSON schema reliability
+    # Cap requests to a max of 4 cards per LLM call
     MAX_PER_CALL = 4
     all_generated_cards = []
 
-    cards_per_chunk = max(1, target_count // len(document_chunks))
+    cards_per_chunk = max(1, math.ceil(target_count / len(document_chunks)))
 
     for chunk in document_chunks:
         chunk_cards_needed = cards_per_chunk
         chunk_generated = 0
-        max_attempts = 3 # Prevent infinite loops if LLM struggles
+        max_attempts = 3  # Prevent infinite loops if LLM struggles
         attempt = 0
 
         while chunk_generated < chunk_cards_needed and attempt < max_attempts:
@@ -69,13 +71,13 @@ def generate_flashcards_from_chunks(document_chunks: list[str], user_instruction
                     chunk_generated += len(new_cards)
 
                     if len(all_generated_cards) >= target_count:
-                        return all_generated_cards
+                        return all_generated_cards[:target_count]
 
             except Exception as e:
                 print(f"Warning: Batch generation pass failed: {e}")
                 break
 
-    return all_generated_cards
+    return all_generated_cards[:target_count]
 
 def generate_remediation_cards(question: str, reference_context: str, user_answer: str, feedback: str) -> List[dict]:
     """Generates 2-3 focused flashcards to remediate a failed quiz response."""
@@ -100,7 +102,6 @@ def generate_remediation_cards(question: str, reference_context: str, user_answe
     ])
     
     llm = ChatOllama(model="llama3.1", temperature=0.3)
-    
     structured_llm = llm.with_structured_output(FlashcardDraftResponse)
     
     chain = prompt | structured_llm

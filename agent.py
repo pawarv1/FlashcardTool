@@ -8,7 +8,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from vector_utils import get_collection
 
 @tool
-def search_deck_cards(query: str, folder_name: Optional[str] = None, deck_name: Optional[str] = None, num_results: int = 5) -> str:
+def search_deck_cards(query: str, folder_name: Optional[str] = None, deck_name: Optional[str] = None) -> str:
     """Use this tool to search through flashcards in the user's active deck or folder for definitions, formulas, and concepts."""
     collection = get_collection()
     
@@ -29,7 +29,7 @@ def search_deck_cards(query: str, folder_name: Optional[str] = None, deck_name: 
     try:
         results = collection.query(
             query_texts=[query],
-            n_results=num_results,
+            n_results=3,
             where=where_filter
         )
         

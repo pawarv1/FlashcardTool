@@ -924,30 +924,16 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
         st.subheader("🕸️ Concept Knowledge Graph")
         st.caption("Nodes represent flashcards; edges represent semantic similarity derived from vector embeddings.")
 
-        col_thresh, col_legend = st.columns([1, 2])
-        with col_thresh:
-            threshold = st.slider(
-                "Similarity Connection Threshold", 
-                min_value=0.20, 
-                max_value=0.80, 
-                value=0.45, 
-                step=0.05,
-                help="Lower thresholds create more connections; higher thresholds show only tightly coupled concepts."
-            )
-
-        with col_legend:
-            st.markdown(
-                "**Legend:** "
-                "🔵 `Concept` | "
-                "🟢 `Code Snippet` | "
-                "🟠 `Definition` | "
-                "🔴 `Formula` | "
-                "🟣 `Comparison` | "
-                "🩵 `Example`"
-            )
+        # Lazy execution toggle/slider
+        threshold = st.slider(
+            "Similarity Connection Threshold", 
+            min_value=0.20, max_value=0.80, value=0.45, step=0.05,
+            key=f"thresh_{st.session_state.current_folder}_{st.session_state.current_deck}"
+        )
 
         st.divider()
 
+        # Calculate graph and render ONLY when the tab is active
         with st.spinner("Calculating vector distances and building interactive graph..."):
             graph_html = generate_knowledge_graph_html(
                 folder_name=st.session_state.current_folder,
