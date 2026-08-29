@@ -28,6 +28,7 @@ def upsert_card_to_chroma(folder_name: str, deck_name: str, card_data: dict):
         "folder": folder_name.strip().replace(" ", "_"),
         "deck": deck_name.strip().replace(" ", "_").lower(),
         "card_type": card_data.get("card_type", "concept"),
+        "media_link": card_data.get("media_link") or "",
         "source_type": card_data.get("source_type", "manual_entry")
     }
     

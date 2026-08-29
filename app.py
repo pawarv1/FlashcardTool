@@ -296,7 +296,7 @@ def edit_card_popup(card: dict):
 def ingest_document_popup():
     uploaded_file = st.file_uploader(
         "Upload Study Document", 
-        type=["pdf", "docx", "pptx", "txt", "md", "csv", "html"]
+        type=["pdf", "docx", "pptx", "txt", "md", "csv", "html", "ipynb"]
     )
     instructions = st.text_input(
         "Focus Directive (Optional)", 

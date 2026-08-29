@@ -2,6 +2,32 @@ import io
 import os
 from markitdown import MarkItDown
 import pandas as pd
+import json
+
+def parse_ipynb_to_markdown(uploaded_file) -> str:
+    """Extracts markdown text and code blocks from a Jupyter Notebook (.ipynb)."""
+    try:
+        uploaded_file.seek(0)
+        notebook = json.load(uploaded_file)
+        
+        markdown_output = []
+        cells = notebook.get("cells", [])
+        
+        for cell in cells:
+            cell_type = cell.get("cell_type")
+            source = "".join(cell.get("source", []))
+            
+            if cell_type == "markdown" and source.strip():
+                markdown_output.append(source.strip())
+            elif cell_type == "code" and source.strip():
+                # Format code cells as markdown code blocks
+                markdown_output.append(f"```python\n{source.strip()}\n```")
+                
+        return "\n\n".join(markdown_output)
+        
+    except Exception as e:
+        print(f"Error parsing .ipynb file: {e}")
+        return ""
 
 def parse_csv_direct_to_cards(uploaded_file) -> list[dict]:
     """
@@ -9,12 +35,14 @@ def parse_csv_direct_to_cards(uploaded_file) -> list[dict]:
     bypassing LLM generation to preserve exact text.
     """
     try:
+        uploaded_file.seek(0)
         df = pd.read_csv(uploaded_file)
         
         df.columns = [str(col).strip().lower() for col in df.columns]
         
         front_col = next((c for c in df.columns if c in ["front", "question", "prompt", "term"]), df.columns[0])
         back_col = next((c for c in df.columns if c in ["back", "answer", "definition", "summary"]), df.columns[1] if len(df.columns) > 1 else df.columns[0])
+        media_col = next((c for c in df.columns if c in ["media_link", "media", "image", "url"]), None)
         
         cards = []
         for _, row in df.iterrows():
@@ -27,6 +55,7 @@ def parse_csv_direct_to_cards(uploaded_file) -> list[dict]:
             code_block = str(row.get("code_block", "")).strip() if "code_block" in df.columns and pd.notna(row.get("code_block")) else None
             explanation = str(row.get("explanation", "")).strip() if "explanation" in df.columns and pd.notna(row.get("explanation")) else None
             card_type = str(row.get("card_type", "concept")).strip() if "card_type" in df.columns and pd.notna(row.get("card_type")) else "concept"
+            media_link = str(row.get(media_col, "")).strip() if media_col and pd.notna(row.get(media_col)) else None
 
             cards.append({
                 "card_type": card_type,
@@ -34,7 +63,7 @@ def parse_csv_direct_to_cards(uploaded_file) -> list[dict]:
                 "back": back_text,
                 "code_block": code_block,
                 "explanation": explanation,
-                "media_link": None,
+                "media_link": media_link,
                 "source_type": f"csv_import:{uploaded_file.name}",
                 "mastery_level": 0
             })
@@ -47,13 +76,18 @@ def parse_csv_direct_to_cards(uploaded_file) -> list[dict]:
 
 def extract_text_from_file(uploaded_file) -> str:
     """
-    Converts uploaded files (.txt, .md, .pdf, .docx, .pptx, .csv, .html)
+    Converts uploaded files (.txt, .md, .pdf, .docx, .pptx, .csv, .html, .ipynb)
     into structured Markdown text ready for LLM processing.
     """
     filename = uploaded_file.name.lower()
+    uploaded_file.seek(0)
 
     if filename.endswith((".txt", ".md")):
         return uploaded_file.read().decode("utf-8")
+
+    # Jupyter Notebook handling
+    if filename.endswith(".ipynb"):
+        return parse_ipynb_to_markdown(uploaded_file)
 
     md = MarkItDown()
     file_bytes = io.BytesIO(uploaded_file.read())
