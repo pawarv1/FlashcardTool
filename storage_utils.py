@@ -49,7 +49,7 @@ def rename_folder(old_name: str, new_name: str) -> bool:
     with get_db_connection() as conn:
         cursor = conn.cursor()
         try:
-            cursor.execute("UPDATE folders SET name = ? WHERE name = ? AND is_deleted = 0;",(clean_new, clean_old))
+            cursor.execute("UPDATE folders SET name = ? WHERE name = ? AND is_deleted = 0;", (clean_new, clean_old))
             if cursor.rowcount > 0:
                 conn.commit()
                 rename_folder_in_chroma(clean_old, clean_new)
@@ -121,7 +121,7 @@ def create_deck(folder_name: str, deck_name: str) -> bool:
 
         folder_id = folder["id"]
 
-        existing = cursor.execute("SELECT id, is_deleted FROM decks WHERE folder_id = ? AND name = ?;",(folder_id, clean_deck)).fetchone()
+        existing = cursor.execute("SELECT id, is_deleted FROM decks WHERE folder_id = ? AND name = ?;", (folder_id, clean_deck)).fetchone()
 
         if existing:
             if existing["is_deleted"] == 1:
@@ -130,7 +130,7 @@ def create_deck(folder_name: str, deck_name: str) -> bool:
                 return True
             return False
 
-        cursor.execute("INSERT INTO decks (folder_id, name) VALUES (?, ?);",(folder_id, clean_deck))
+        cursor.execute("INSERT INTO decks (folder_id, name) VALUES (?, ?);", (folder_id, clean_deck))
         conn.commit()
         return True
 
@@ -223,25 +223,20 @@ def get_review_forecast(folder_name: str, deck_name: str, days: int = 7) -> Dict
         return {}
 
     today = date.today()
-    
     forecast_buckets = {}
     
-    # 1. Bucket for Overdue / Due Today
     forecast_buckets["Overdue / Today"] = 0
     
-    # 2. Daily buckets for upcoming days
     for i in range(1, days):
         day_date = today + timedelta(days=i)
         day_label = day_date.strftime("%a (%m/%d)")
         forecast_buckets[day_label] = 0
 
-    # 3. Bucket for future reviews beyond the forecast window
     forecast_buckets[f"+{days} Days+"] = 0
 
     for card in cards:
         next_review_str = card.get("next_review_at")
         
-        # If no date set or already past/today -> Overdue / Today
         if not next_review_str:
             forecast_buckets["Overdue / Today"] += 1
             continue
@@ -249,7 +244,6 @@ def get_review_forecast(folder_name: str, deck_name: str, days: int = 7) -> Dict
         try:
             card_date = datetime.strptime(next_review_str.split(".")[0].split("T")[0], "%Y-%m-%d").date()
         except Exception:
-            # Fallback for unexpected date formats
             forecast_buckets["Overdue / Today"] += 1
             continue
 
@@ -325,16 +319,17 @@ def save_card(folder_name: str, deck_name: str, card_data: Dict) -> bool:
 
         query = """
             INSERT INTO cards (
-                id, deck_id, card_type, front, back, code_block, explanation, 
+                id, deck_id, card_type, front, back, code_block, explanation, media_link,
                 source_type, mastery_level, ease_factor, interval_days, 
                 repetition_count, next_review_at, synced_to_chroma, is_deleted
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
             ON CONFLICT(id) DO UPDATE SET
                 card_type = excluded.card_type,
                 front = excluded.front,
                 back = excluded.back,
                 code_block = excluded.code_block,
                 explanation = excluded.explanation,
+                media_link = excluded.media_link,
                 source_type = excluded.source_type,
                 mastery_level = excluded.mastery_level,
                 ease_factor = excluded.ease_factor,
@@ -353,6 +348,7 @@ def save_card(folder_name: str, deck_name: str, card_data: Dict) -> bool:
             card_data.get("back", "").strip(),
             card_data.get("code_block"),
             card_data.get("explanation"),
+            card_data.get("media_link"),
             card_data.get("source_type", "manual_entry"),
             card_data.get("mastery_level", 0),
             card_data.get("ease_factor", 2.5),
@@ -396,16 +392,17 @@ def save_card_batch(folder_name: str, deck_name: str, cards: List[Dict]) -> bool
         
         query = """
             INSERT INTO cards (
-                id, deck_id, card_type, front, back, code_block, explanation, 
+                id, deck_id, card_type, front, back, code_block, explanation, media_link,
                 source_type, mastery_level, ease_factor, interval_days, 
                 repetition_count, next_review_at, synced_to_chroma, is_deleted
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
             ON CONFLICT(id) DO UPDATE SET
                 card_type = excluded.card_type,
                 front = excluded.front,
                 back = excluded.back,
                 code_block = excluded.code_block,
                 explanation = excluded.explanation,
+                media_link = excluded.media_link,
                 source_type = excluded.source_type,
                 mastery_level = excluded.mastery_level,
                 ease_factor = excluded.ease_factor,
@@ -432,6 +429,7 @@ def save_card_batch(folder_name: str, deck_name: str, cards: List[Dict]) -> bool
                 card.get("back", "").strip(),
                 card.get("code_block"),
                 card.get("explanation"),
+                card.get("media_link"),
                 card.get("source_type", "manual_entry"),
                 card.get("mastery_level", 0),
                 card.get("ease_factor", 2.5),
@@ -452,10 +450,8 @@ def save_card_batch(folder_name: str, deck_name: str, cards: List[Dict]) -> bool
                 "source_type": card.get("source_type", "manual_entry")
             })
 
-        # Commit ALL cards to SQLite in a single transaction
         conn.commit()
 
-        # Batch upsert to ChromaDB
         try:
             collection = get_collection()
             collection.upsert(documents=documents, metadatas=metadatas, ids=ids_to_sync)

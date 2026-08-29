@@ -40,7 +40,7 @@ def init_db():
             );
         """)
         
-        # 3. Cards Table
+        # 3. Cards Table (UPDATED WITH media_link)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS cards (
                 id TEXT PRIMARY KEY,
@@ -50,6 +50,7 @@ def init_db():
                 back TEXT NOT NULL,
                 code_block TEXT,
                 explanation TEXT,
+                media_link TEXT,
                 source_type TEXT DEFAULT 'manual_entry',
                 mastery_level INTEGER DEFAULT 0,
                 ease_factor REAL DEFAULT 2.5,
