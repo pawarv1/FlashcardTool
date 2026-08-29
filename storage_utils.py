@@ -1,7 +1,15 @@
 import uuid
 from typing import List, Dict
 from db import get_db_connection
-from vector_utils import upsert_card_to_chroma, delete_card_from_chroma, delete_deck_from_chroma, delete_folder_from_chroma, rename_deck_in_chroma, rename_folder_in_chroma,get_collection
+from vector_utils import (
+    upsert_card_to_chroma, 
+    delete_card_from_chroma, 
+    delete_deck_from_chroma, 
+    delete_folder_from_chroma, 
+    rename_deck_in_chroma, 
+    rename_folder_in_chroma, 
+    get_collection
+)
 from datetime import datetime, timedelta, date
 
 # -------------------------------------------------------------------
@@ -102,6 +110,34 @@ def get_decks_in_folder(folder_name: str) -> List[str]:
         """
         rows = cursor.execute(query, (clean_folder,)).fetchall()
         return [r["name"] for r in rows]
+
+def get_all_deck_tags(folder_name: str, deck_name: str) -> list[str]:
+    """Returns a sorted list of unique tags used in a specific deck."""
+    clean_folder = folder_name.strip()
+    clean_deck = deck_name.strip()
+    
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        query = """
+            SELECT c.tags 
+            FROM cards c
+            JOIN decks d ON c.deck_id = d.id
+            JOIN folders f ON d.folder_id = f.id
+            WHERE f.name = ? AND d.name = ? 
+              AND f.is_deleted = 0 AND d.is_deleted = 0 AND c.is_deleted = 0
+              AND c.tags IS NOT NULL AND c.tags != '';
+        """
+        rows = cursor.execute(query, (clean_folder, clean_deck)).fetchall()
+
+    unique_tags = set()
+    for row in rows:
+        if row["tags"]:
+            for tag in row["tags"].split(","):
+                clean_tag = tag.strip().lower()
+                if clean_tag:
+                    unique_tags.add(clean_tag)
+
+    return sorted(list(unique_tags))
 
 def create_deck(folder_name: str, deck_name: str) -> bool:
     """Creates a new deck inside a parent folder or restores a soft-deleted one."""
@@ -320,9 +356,9 @@ def save_card(folder_name: str, deck_name: str, card_data: Dict) -> bool:
         query = """
             INSERT INTO cards (
                 id, deck_id, card_type, front, back, code_block, explanation, media_link,
-                source_type, mastery_level, ease_factor, interval_days, 
+                source_type, mastery_level, tags, ease_factor, interval_days, 
                 repetition_count, next_review_at, synced_to_chroma, is_deleted
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
             ON CONFLICT(id) DO UPDATE SET
                 card_type = excluded.card_type,
                 front = excluded.front,
@@ -330,6 +366,7 @@ def save_card(folder_name: str, deck_name: str, card_data: Dict) -> bool:
                 code_block = excluded.code_block,
                 explanation = excluded.explanation,
                 media_link = excluded.media_link,
+                tags = excluded.tags,
                 source_type = excluded.source_type,
                 mastery_level = excluded.mastery_level,
                 ease_factor = excluded.ease_factor,
@@ -351,6 +388,7 @@ def save_card(folder_name: str, deck_name: str, card_data: Dict) -> bool:
             card_data.get("media_link"),
             card_data.get("source_type", "manual_entry"),
             card_data.get("mastery_level", 0),
+            card_data.get("tags"),
             card_data.get("ease_factor", 2.5),
             card_data.get("interval_days", 0),
             card_data.get("repetition_count", 0),
@@ -393,9 +431,9 @@ def save_card_batch(folder_name: str, deck_name: str, cards: List[Dict]) -> bool
         query = """
             INSERT INTO cards (
                 id, deck_id, card_type, front, back, code_block, explanation, media_link,
-                source_type, mastery_level, ease_factor, interval_days, 
+                source_type, mastery_level, tags, ease_factor, interval_days, 
                 repetition_count, next_review_at, synced_to_chroma, is_deleted
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
             ON CONFLICT(id) DO UPDATE SET
                 card_type = excluded.card_type,
                 front = excluded.front,
@@ -403,6 +441,7 @@ def save_card_batch(folder_name: str, deck_name: str, cards: List[Dict]) -> bool
                 code_block = excluded.code_block,
                 explanation = excluded.explanation,
                 media_link = excluded.media_link,
+                tags = excluded.tags,
                 source_type = excluded.source_type,
                 mastery_level = excluded.mastery_level,
                 ease_factor = excluded.ease_factor,
@@ -432,6 +471,7 @@ def save_card_batch(folder_name: str, deck_name: str, cards: List[Dict]) -> bool
                 card.get("media_link"),
                 card.get("source_type", "manual_entry"),
                 card.get("mastery_level", 0),
+                card.get("tags"),
                 card.get("ease_factor", 2.5),
                 card.get("interval_days", 0),
                 card.get("repetition_count", 0),
@@ -447,6 +487,8 @@ def save_card_batch(folder_name: str, deck_name: str, cards: List[Dict]) -> bool
                 "folder": clean_folder.replace(" ", "_"),
                 "deck": clean_deck.replace(" ", "_").lower(),
                 "card_type": card.get("card_type", "concept"),
+                "media_link": card.get("media_link") or "",
+                "tags": card.get("tags") or "",
                 "source_type": card.get("source_type", "manual_entry")
             })
 

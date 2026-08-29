@@ -84,9 +84,13 @@ def generate_anki_deck_bytes(folder_name: str, deck_name: str) -> bytes:
             else:
                 media_html = f'<a href="{media_link}">View Attachment</a>'
 
+        tags_str = card.get("tags") or ""
+        card_tags = [t.strip().replace(" ", "_") for t in tags_str.split(",") if t.strip()]
+
         note = genanki.Note(
             model=CARD_MODEL,
-            fields=[front, back, code_block, explanation, card_type, media_html]
+            fields=[front, back, code_block, explanation, card_type, media_html],
+            tags=card_tags
         )
         anki_deck.add_note(note)
 

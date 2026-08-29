@@ -29,6 +29,7 @@ def upsert_card_to_chroma(folder_name: str, deck_name: str, card_data: dict):
         "deck": deck_name.strip().replace(" ", "_").lower(),
         "card_type": card_data.get("card_type", "concept"),
         "media_link": card_data.get("media_link") or "",
+        "tags": card_data.get("tags") or "",
         "source_type": card_data.get("source_type", "manual_entry")
     }
     
@@ -163,13 +164,14 @@ def check_candidate_duplicates(candidate_cards: list, folder_name: str = None, d
                     where=where_filter
                 )
 
-                if results and results["distances"] and len(results["distances"][0]) > 0:
+                if results and results.get("distances") and len(results["distances"][0]) > 0:
                     top_distance = results["distances"][0][0]
                     
                     if top_distance < distance_threshold:
                         is_duplicate = True
-                        matched_meta = results["metadatas"][0][0] if results["metadatas"] else {}
-                        matched_text = matched_meta.get("front") or results["documents"][0][0]
+                        matched_meta = results["metadatas"][0][0] if results.get("metadatas") and len(results["metadatas"][0]) > 0 else {}
+                        doc_match = results["documents"][0][0] if results.get("documents") and len(results["documents"][0]) > 0 else ""
+                        matched_text = matched_meta.get("front") or doc_match
             except Exception as e:
                 print(f"Warning: Deduplication query error: {e}")
 

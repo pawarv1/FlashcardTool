@@ -13,7 +13,7 @@ def get_db_connection():
     return conn
 
 def init_db():
-    """Initializes normalized SQLite tables, schema indices, and soft-delete defaults."""
+    """Initializes normalized SQLite tables, schema indices, schema migrations, and soft-delete defaults."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         
@@ -40,7 +40,7 @@ def init_db():
             );
         """)
         
-        # 3. Cards Table (UPDATED WITH media_link)
+        # 3. Cards Table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS cards (
                 id TEXT PRIMARY KEY,
@@ -51,6 +51,7 @@ def init_db():
                 code_block TEXT,
                 explanation TEXT,
                 media_link TEXT,
+                tags TEXT,
                 source_type TEXT DEFAULT 'manual_entry',
                 mastery_level INTEGER DEFAULT 0,
                 ease_factor REAL DEFAULT 2.5,
@@ -133,6 +134,8 @@ def auto_heal_chroma_sync():
                 "folder": clean_folder,
                 "deck": clean_deck,
                 "card_type": card.get("card_type", "concept"),
+                "media_link": card.get("media_link") or "",
+                "tags": card.get("tags") or "",
                 "source_type": card.get("source_type", "manual_entry")
             }
             

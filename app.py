@@ -20,7 +20,8 @@ from storage_utils import (
     get_deck_analytics,
     log_quiz_attempt,
     get_quiz_analytics,
-    get_review_forecast
+    get_review_forecast,
+    get_all_deck_tags
 )
 from anki_utils import generate_anki_deck_bytes
 from agent import agent_graph
@@ -181,6 +182,7 @@ def rename_deck_popup(deck_name: str):
 @st.dialog("Add New Card")
 def new_card_popup():
     card_type = st.selectbox("Card Type", CARD_TYPES, index=0)
+    tags_input = st.text_input("Tags (Optional, comma-separated)", placeholder="e.g. midterm, algorithms, priority")
     front = st.text_area("Front (Question / Prompt)")
     back = st.text_area("Back (Answer / Summary)")
     code_block = st.text_area("Code Block (Optional)", help="Paste any relevant code snippet here")
@@ -201,6 +203,8 @@ def new_card_popup():
             elif media_link_input.strip():
                 final_media_path = media_link_input.strip()
 
+            clean_tags = ",".join([t.strip().lower() for t in tags_input.split(",") if t.strip()]) if tags_input.strip() else None
+
             card_data = {
                 "card_type": card_type,
                 "front": front.strip(),
@@ -208,6 +212,7 @@ def new_card_popup():
                 "code_block": code_block.strip() if code_block.strip() else None,
                 "explanation": explanation.strip() if explanation.strip() else None,
                 "media_link": final_media_path,
+                "tags": clean_tags,
                 "source_type": "manual_entry",
                 "mastery_level": 0
             }
@@ -225,8 +230,10 @@ def new_card_popup():
 def edit_card_popup(card: dict):
     curr_type = card.get("card_type", "concept")
     type_idx = CARD_TYPES.index(curr_type) if curr_type in CARD_TYPES else 0
+    existing_tags = card.get("tags") or ""
 
     updated_type = st.selectbox("Card Type", CARD_TYPES, index=type_idx)
+    updated_tags_input = st.text_input("Tags (Optional, comma-separated)", value=existing_tags)
     updated_front = st.text_area("Front (Question / Prompt)", value=card.get("front", ""))
     updated_back = st.text_area("Back (Answer / Summary)", value=card.get("back", ""))
     updated_code = st.text_area("Code Block (Optional)", value=card.get("code_block") or "")
@@ -264,6 +271,8 @@ def edit_card_popup(card: dict):
                 else:
                     final_media_path = None
 
+                clean_updated_tags = ",".join([t.strip().lower() for t in updated_tags_input.split(",") if t.strip()]) if updated_tags_input.strip() else None
+
                 updated_card = {
                     "card_id": card.get("card_id"),
                     "card_type": updated_type,
@@ -272,6 +281,7 @@ def edit_card_popup(card: dict):
                     "code_block": updated_code.strip() if updated_code.strip() else None,
                     "explanation": updated_explanation.strip() if updated_explanation.strip() else None,
                     "media_link": final_media_path,
+                    "tags": clean_updated_tags,
                     "source_type": card.get("source_type", "manual_entry"),
                     "mastery_level": card.get("mastery_level", 0)
                 }
@@ -483,6 +493,23 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
     ])
 
     cards = load_deck_cards(st.session_state.current_folder, st.session_state.current_deck)
+    deck_tags = get_all_deck_tags(st.session_state.current_folder, st.session_state.current_deck)
+
+    selected_tags = []
+    if deck_tags:
+        selected_tags = st.multiselect(
+            "🏷️ Filter by Tag:",
+            options=deck_tags,
+            format_func=lambda t: f"#{t}",
+            key=f"tag_filter_{st.session_state.current_folder}_{st.session_state.current_deck}"
+        )
+
+    # Filter cards list if tags are selected
+    if selected_tags:
+        cards = [
+            c for c in cards 
+            if c.get("tags") and any(t.strip().lower() in selected_tags for t in c.get("tags").split(","))
+        ]
 
     # SUB-TAB 1: CARD LIST & MANAGEMENT
     with deck_tab_cards:
@@ -563,6 +590,13 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
             due_only=only_due
         )
 
+        # 3. Apply tag filtering to Study Mode
+        if selected_tags:
+            study_cards = [
+                c for c in study_cards 
+                if c.get("tags") and any(t.strip().lower() in selected_tags for t in c.get("tags").split(","))
+            ]
+
         if not study_cards:
             if only_due:
                 st.success("🎉 All caught up! No cards in this deck are currently due for review.")
@@ -581,7 +615,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
             st.markdown(f"**Card {curr_idx + 1} of {total_cards}**")
             st.progress((curr_idx + 1) / total_cards)
 
-            # 3. Flashcard Render Container
+            # 4. Flashcard Render Container
             with st.container(border=True):
                 card_type = curr_card.get("card_type", "concept").upper()
                 interval = curr_card.get("interval_days", 0)
@@ -628,7 +662,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                                 if a_audio:
                                     st.audio(a_audio, format="audio/mp3", autoplay=True)
 
-            # 4. Navigation Buttons
+            # 5. Navigation Buttons
             col_prev, col_flip, col_next = st.columns([1, 2, 1])
 
             with col_prev:
@@ -649,7 +683,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                     st.session_state.study_is_flipped = False
                     st.rerun()
 
-            # 5. SM-2 Self-Grading Buttons
+            # 6. SM-2 Self-Grading Buttons
             if st.session_state.study_is_flipped:
                 st.markdown("---")
                 st.markdown("#### Rate Your Recall (SM-2):")
