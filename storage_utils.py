@@ -92,6 +92,32 @@ def delete_folder(folder_name: str) -> bool:
         delete_folder_from_chroma(clean_name)
         return True
 
+def get_all_folder_tags(folder_name: str) -> list[str]:
+    """Returns a sorted list of unique tags across ALL decks in a folder."""
+    clean_folder = folder_name.strip()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        query = """
+            SELECT c.tags 
+            FROM cards c
+            JOIN decks d ON c.deck_id = d.id
+            JOIN folders f ON d.folder_id = f.id
+            WHERE f.name = ? 
+              AND f.is_deleted = 0 AND d.is_deleted = 0 AND c.is_deleted = 0
+              AND c.tags IS NOT NULL AND c.tags != '';
+        """
+        rows = cursor.execute(query, (clean_folder,)).fetchall()
+
+    unique_tags = set()
+    for row in rows:
+        if row["tags"]:
+            for tag in row["tags"].split(","):
+                clean_tag = tag.strip().lower()
+                if clean_tag:
+                    unique_tags.add(clean_tag)
+
+    return sorted(list(unique_tags))
+
 # -------------------------------------------------------------------
 # DECK OPERATIONS
 # -------------------------------------------------------------------
@@ -332,6 +358,71 @@ def load_deck_cards(folder_name: str, deck_name: str, due_only: bool = False) ->
             card_dict["card_id"] = card_dict.pop("id")
             cards.append(card_dict)
         return cards
+
+def load_cram_cards(folder_name: str, deck_name: str = None, selected_tags: List[str] = None, difficulty_filter: str = "all", card_limit: int = 0) -> List[Dict]:
+    """
+    Fetches active cards for a custom cram session based on folder/deck scope,
+    tags, difficulty metrics, and optional card limits.
+    
+    difficulty_filter options:
+      - 'all': All matching cards
+      - 'hard': ease_factor < 2.3 or high failure history
+      - 'unseen': repetition_count == 0
+    """
+    clean_folder = folder_name.strip()
+    clean_deck = deck_name.strip() if deck_name else None
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        query_params = [clean_folder]
+        base_query = """
+            SELECT c.*, d.name AS deck_name, f.name AS folder_name
+            FROM cards c
+            JOIN decks d ON c.deck_id = d.id
+            JOIN folders f ON d.folder_id = f.id
+            WHERE f.name = ? 
+              AND f.is_deleted = 0 AND d.is_deleted = 0 AND c.is_deleted = 0
+        """
+
+        # 1. Single Deck Scope vs. Entire Folder Scope
+        if clean_deck:
+            base_query += " AND d.name = ?"
+            query_params.append(clean_deck)
+
+        # 2. Difficulty Filtering
+        if difficulty_filter == "hard":
+            base_query += " AND (c.ease_factor < 2.3 OR c.mastery_level = 0)"
+        elif difficulty_filter == "unseen":
+            base_query += " AND c.repetition_count = 0"
+
+        # Sort hard cards first for cram sessions, then by creation date
+        base_query += " ORDER BY c.ease_factor ASC, c.created_at ASC"
+
+        rows = cursor.execute(base_query, query_params).fetchall()
+
+    cards = []
+    normalized_tags = [t.strip().lower() for t in selected_tags] if selected_tags else []
+
+    for r in rows:
+        card_dict = dict(r)
+        card_dict["card_id"] = card_dict.pop("id")
+        
+        card_tags_str = card_dict.get("tags") or ""
+        card_tags = [t.strip().lower() for t in card_tags_str.split(",") if t.strip()]
+
+        # 3. Multi-Tag Filtering Check
+        if normalized_tags:
+            if not any(tag in card_tags for tag in normalized_tags):
+                continue
+
+        cards.append(card_dict)
+
+    # 4. Optional Card Limit Cap
+    if card_limit > 0 and len(cards) > card_limit:
+        cards = cards[:card_limit]
+
+    return cards
 
 def save_card(folder_name: str, deck_name: str, card_data: Dict) -> bool:
     """Inserts or updates a single card in SQLite and syncs to ChromaDB."""

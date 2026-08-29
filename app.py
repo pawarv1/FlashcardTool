@@ -21,7 +21,9 @@ from storage_utils import (
     log_quiz_attempt,
     get_quiz_analytics,
     get_review_forecast,
-    get_all_deck_tags
+    get_all_deck_tags,
+    load_cram_cards,
+    get_all_folder_tags
 )
 from anki_utils import generate_anki_deck_bytes
 from agent import agent_graph
@@ -99,6 +101,18 @@ if "study_card_index" not in st.session_state:
 
 if "study_is_flipped" not in st.session_state:
     st.session_state.study_is_flipped = False
+
+if "cram_mode_active" not in st.session_state:
+    st.session_state.cram_mode_active = False
+
+if "cram_card_index" not in st.session_state:
+    st.session_state.cram_card_index = 0
+
+if "cram_is_flipped" not in st.session_state:
+    st.session_state.cram_is_flipped = False
+
+if "cram_cards" not in st.session_state:
+    st.session_state.cram_cards = []
 
 # --- SIDEBAR: SYSTEM MAINTENANCE & BACKUP ---
 with st.sidebar:
@@ -574,162 +588,297 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                         if card.get("media_link"):
                             render_media(card.get("media_link"))
 
-    # SUB-TAB 2: INTERACTIVE STUDY MODE
+    # SUB-TAB 2: INTERACTIVE STUDY & CRAM MODE
     with deck_tab_study:
-        # 1. Study Mode Controls Header
-        col_mode_title, col_toggle = st.columns([2, 1])
+        # 1. Mode Selector Header
+        col_mode_title, col_session_type = st.columns([2, 1])
         with col_mode_title:
-            st.subheader("📖 Spaced Repetition Study")
-        with col_toggle:
-            only_due = st.toggle("⏰ Only Due Cards", value=False, help="Filter out cards that are not due for review yet")
+            st.subheader("📖 Study & Review Engine")
+        with col_session_type:
+            study_mode_type = st.radio(
+                "Study Mode",
+                options=["Spaced Repetition (SM-2)", "⚡ Cram Session"],
+                horizontal=True,
+                key=f"mode_select_{st.session_state.current_folder}_{st.session_state.current_deck}"
+            )
 
-        # 2. Fetch cards based on toggle selection
-        study_cards = load_deck_cards(
-            st.session_state.current_folder, 
-            st.session_state.current_deck, 
-            due_only=only_due
-        )
+        st.divider()
 
-        # 3. Apply tag filtering to Study Mode
-        if selected_tags:
-            study_cards = [
-                c for c in study_cards 
-                if c.get("tags") and any(t.strip().lower() in selected_tags for t in c.get("tags").split(","))
-            ]
+        # -------------------------------------------------------------------
+        # BRANCH A: SPAN-REPETITION MODE (STANDARD SM-2)
+        # -------------------------------------------------------------------
+        if study_mode_type == "Spaced Repetition (SM-2)":
+            col_due_toggle, _ = st.columns([1, 2])
+            with col_due_toggle:
+                only_due = st.toggle("⏰ Only Due Cards", value=False, help="Filter out cards that are not due for review yet")
 
-        if not study_cards:
-            if only_due:
-                st.success("🎉 All caught up! No cards in this deck are currently due for review.")
+            study_cards = load_deck_cards(
+                st.session_state.current_folder, 
+                st.session_state.current_deck, 
+                due_only=only_due
+            )
+
+            # Apply Tag Filter if selected in the main tab bar
+            if selected_tags:
+                study_cards = [
+                    c for c in study_cards 
+                    if c.get("tags") and any(t.strip().lower() in selected_tags for t in c.get("tags").split(","))
+                ]
+
+            if not study_cards:
+                if only_due:
+                    st.success("🎉 All caught up! No cards in this deck are currently due for review.")
+                else:
+                    st.info("No cards match your current filters. Add cards or clear tag filters to study!")
             else:
-                st.info("No cards in this deck yet. Add cards to start studying!")
-        else:
-            total_cards = len(study_cards)
-            
-            # Reset index if out of bounds when switching toggles
-            if st.session_state.study_card_index >= total_cards:
-                st.session_state.study_card_index = 0
+                total_cards = len(study_cards)
+                if st.session_state.study_card_index >= total_cards:
+                    st.session_state.study_card_index = 0
 
-            curr_idx = st.session_state.study_card_index
-            curr_card = study_cards[curr_idx]
+                curr_idx = st.session_state.study_card_index
+                curr_card = study_cards[curr_idx]
 
-            st.markdown(f"**Card {curr_idx + 1} of {total_cards}**")
-            st.progress((curr_idx + 1) / total_cards)
+                st.markdown(f"**Card {curr_idx + 1} of {total_cards}**")
+                st.progress((curr_idx + 1) / total_cards)
 
-            # 4. Flashcard Render Container
-            with st.container(border=True):
-                card_type = curr_card.get("card_type", "concept").upper()
-                interval = curr_card.get("interval_days", 0)
-                reps = curr_card.get("repetition_count", 0)
-                
-                st.caption(f"Type: `{card_type}` | Repetitions: {reps} | Next Interval: {interval}d")
-                
-                # Question Section & Audio Trigger
-                col_q_text, col_q_audio = st.columns([4, 1])
-                with col_q_text:
-                    st.markdown("### Question / Prompt")
-                    st.write(curr_card.get("front", ""))
-                    if curr_card.get("code_block"):
-                        st.code(curr_card.get("code_block"))
+                # Flashcard Render Container
+                with st.container(border=True):
+                    card_type = curr_card.get("card_type", "concept").upper()
+                    interval = curr_card.get("interval_days", 0)
+                    reps = curr_card.get("repetition_count", 0)
+                    
+                    st.caption(f"Type: `{card_type}` | Repetitions: {reps} | Next Interval: {interval}d")
+                    
+                    col_q_text, col_q_audio = st.columns([4, 1])
+                    with col_q_text:
+                        st.markdown("### Question / Prompt")
+                        st.write(curr_card.get("front", ""))
+                        if curr_card.get("code_block"):
+                            st.code(curr_card.get("code_block"))
 
-                with col_q_audio:
-                    if st.button("🔊 Read Question", key=f"tts_q_{curr_card.get('card_id')}"):
-                        with st.spinner("Generating audio..."):
-                            q_audio = generate_tts_audio_bytes(curr_card.get("front", ""))
-                            if q_audio:
-                                st.audio(q_audio, format="audio/mp3", autoplay=True)
-
-                # Answer Section & Audio Trigger
-                if st.session_state.study_is_flipped:
-                    st.divider()
-                    col_a_text, col_a_audio = st.columns([4, 1])
-                    with col_a_text:
-                        st.markdown("### Answer / Explanation")
-                        st.write(curr_card.get("back", ""))
-                        if curr_card.get("explanation"):
-                            st.info(curr_card.get("explanation"))
-                        if curr_card.get("media_link"):
-                            render_media(curr_card.get("media_link"))
-
-                    with col_a_audio:
-                        if st.button("🔊 Read Answer", key=f"tts_a_{curr_card.get('card_id')}"):
+                    with col_q_audio:
+                        if st.button("🔊 Read Question", key=f"tts_q_{curr_card.get('card_id')}"):
                             with st.spinner("Generating audio..."):
-                                # Reads back text plus optional explanation context
-                                full_answer_text = curr_card.get("back", "")
-                                if curr_card.get("explanation"):
-                                    full_answer_text += f". Explanation: {curr_card.get('explanation')}"
-                                
-                                a_audio = generate_tts_audio_bytes(full_answer_text)
-                                if a_audio:
-                                    st.audio(a_audio, format="audio/mp3", autoplay=True)
+                                q_audio = generate_tts_audio_bytes(curr_card.get("front", ""))
+                                if q_audio:
+                                    st.audio(q_audio, format="audio/mp3", autoplay=True)
 
-            # 5. Navigation Buttons
-            col_prev, col_flip, col_next = st.columns([1, 2, 1])
+                    if st.session_state.study_is_flipped:
+                        st.divider()
+                        col_a_text, col_a_audio = st.columns([4, 1])
+                        with col_a_text:
+                            st.markdown("### Answer / Explanation")
+                            st.write(curr_card.get("back", ""))
+                            if curr_card.get("explanation"):
+                                st.info(curr_card.get("explanation"))
+                            if curr_card.get("media_link"):
+                                render_media(curr_card.get("media_link"))
 
-            with col_prev:
-                if st.button("⬅️ Previous", use_container_width=True, disabled=(curr_idx == 0)):
-                    st.session_state.study_card_index -= 1
-                    st.session_state.study_is_flipped = False
-                    st.rerun()
+                        with col_a_audio:
+                            if st.button("🔊 Read Answer", key=f"tts_a_{curr_card.get('card_id')}"):
+                                with st.spinner("Generating audio..."):
+                                    full_answer_text = curr_card.get("back", "")
+                                    if curr_card.get("explanation"):
+                                        full_answer_text += f". Explanation: {curr_card.get('explanation')}"
+                                    a_audio = generate_tts_audio_bytes(full_answer_text)
+                                    if a_audio:
+                                        st.audio(a_audio, format="audio/mp3", autoplay=True)
 
-            with col_flip:
-                flip_label = "🙈 Hide Answer" if st.session_state.study_is_flipped else "🔄 Flip Card (Show Answer)"
-                if st.button(flip_label, type="primary", use_container_width=True):
-                    st.session_state.study_is_flipped = not st.session_state.study_is_flipped
-                    st.rerun()
+                col_prev, col_flip, col_next = st.columns([1, 2, 1])
+                with col_prev:
+                    if st.button("⬅️ Previous", use_container_width=True, disabled=(curr_idx == 0)):
+                        st.session_state.study_card_index -= 1
+                        st.session_state.study_is_flipped = False
+                        st.rerun()
 
-            with col_next:
-                if st.button("Next ➡️", use_container_width=True, disabled=(curr_idx == total_cards - 1)):
-                    st.session_state.study_card_index += 1
-                    st.session_state.study_is_flipped = False
-                    st.rerun()
+                with col_flip:
+                    flip_label = "🙈 Hide Answer" if st.session_state.study_is_flipped else "🔄 Flip Card (Show Answer)"
+                    if st.button(flip_label, type="primary", use_container_width=True):
+                        st.session_state.study_is_flipped = not st.session_state.study_is_flipped
+                        st.rerun()
 
-            # 6. SM-2 Self-Grading Buttons
-            if st.session_state.study_is_flipped:
-                st.markdown("---")
-                st.markdown("#### Rate Your Recall (SM-2):")
-                col_again, col_hard, col_good, col_easy = st.columns(4)
+                with col_next:
+                    if st.button("Next ➡️", use_container_width=True, disabled=(curr_idx == total_cards - 1)):
+                        st.session_state.study_card_index += 1
+                        st.session_state.study_is_flipped = False
+                        st.rerun()
 
-                def process_sm2_review(quality_score: int):
-                    new_rep, new_ef, new_interval, next_review = calculate_sm2(
-                        quality=quality_score,
-                        repetition_count=curr_card.get("repetition_count", 0),
-                        ease_factor=curr_card.get("ease_factor", 2.5),
-                        interval_days=curr_card.get("interval_days", 0)
+                if st.session_state.study_is_flipped:
+                    st.markdown("---")
+                    st.markdown("#### Rate Your Recall (SM-2):")
+                    col_again, col_hard, col_good, col_easy = st.columns(4)
+
+                    def process_sm2_review(quality_score: int):
+                        new_rep, new_ef, new_interval, next_review = calculate_sm2(
+                            quality=quality_score,
+                            repetition_count=curr_card.get("repetition_count", 0),
+                            ease_factor=curr_card.get("ease_factor", 2.5),
+                            interval_days=curr_card.get("interval_days", 0)
+                        )
+                        
+                        updated_card = curr_card.copy()
+                        updated_card["repetition_count"] = new_rep
+                        updated_card["ease_factor"] = new_ef
+                        updated_card["interval_days"] = new_interval
+                        updated_card["next_review_at"] = next_review
+                        updated_card["mastery_level"] = new_rep
+                        
+                        save_card(
+                            folder_name=st.session_state.current_folder,
+                            deck_name=st.session_state.current_deck,
+                            card_data=updated_card
+                        )
+                        
+                        if st.session_state.study_card_index < total_cards - 1:
+                            st.session_state.study_card_index += 1
+                        st.session_state.study_is_flipped = False
+                        st.rerun()
+
+                    with col_again:
+                        if st.button("🔴 Blackout (0)", use_container_width=True):
+                            process_sm2_review(0)
+                    with col_hard:
+                        if st.button("🟠 Hard (1)", use_container_width=True):
+                            process_sm2_review(1)
+                    with col_good:
+                        if st.button("🟡 Good (2)", use_container_width=True):
+                            process_sm2_review(2)
+                    with col_easy:
+                        if st.button("🟢 Easy (3)", use_container_width=True):
+                            process_sm2_review(3)
+
+        # -------------------------------------------------------------------
+        # BRANCH B: CRAM MODE (FOCUSED DRILL)
+        # -------------------------------------------------------------------
+        else:
+            with st.expander("⚡ Configure Focused Cram Session", expanded=not st.session_state.cram_cards):
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    cram_tags = st.multiselect(
+                        "Target Tags",
+                        options=deck_tags,
+                        default=selected_tags if selected_tags else [],
+                        format_func=lambda t: f"#{t}",
+                        key=f"cram_tags_{st.session_state.current_deck}"
                     )
-                    
-                    updated_card = curr_card.copy()
-                    updated_card["repetition_count"] = new_rep
-                    updated_card["ease_factor"] = new_ef
-                    updated_card["interval_days"] = new_interval
-                    updated_card["next_review_at"] = next_review
-                    updated_card["mastery_level"] = new_rep
-                    
-                    save_card(
+                with c2:
+                    cram_difficulty = st.selectbox(
+                        "Card Focus",
+                        options=["all", "hard", "unseen"],
+                        format_func=lambda x: {"all": "All Matching Cards", "hard": "Hard Cards (EF < 2.3)", "unseen": "Unseen / New Cards"}[x],
+                        key=f"cram_diff_{st.session_state.current_deck}"
+                    )
+                with c3:
+                    cram_limit = st.number_input(
+                        "Max Cards Limit (0 = All)", 
+                        min_value=0, max_value=100, value=0,
+                        key=f"cram_lim_{st.session_state.current_deck}"
+                    )
+
+                update_sm2_in_cram = st.checkbox(
+                    "🔄 Update SM-2 Spaced Repetition Intervals",
+                    value=False,
+                    help="If unchecked, cramming won't impact long-term review dates."
+                )
+
+                if st.button("🚀 Start Cram Session", type="primary", use_container_width=True):
+                    fetched_cram_cards = load_cram_cards(
                         folder_name=st.session_state.current_folder,
                         deck_name=st.session_state.current_deck,
-                        card_data=updated_card
+                        selected_tags=cram_tags,
+                        difficulty_filter=cram_difficulty,
+                        card_limit=cram_limit
                     )
-                    
-                    if st.session_state.study_card_index < total_cards - 1:
-                        st.session_state.study_card_index += 1
-                    st.session_state.study_is_flipped = False
+                    st.session_state.cram_cards = fetched_cram_cards
+                    st.session_state.cram_card_index = 0
+                    st.session_state.cram_is_flipped = False
                     st.rerun()
 
-                with col_again:
-                    if st.button("🔴 Blackout (0)", use_container_width=True, help="Complete failure to recall"):
-                        process_sm2_review(0)
+            cram_cards = st.session_state.cram_cards
 
-                with col_hard:
-                    if st.button("🟠 Hard (1)", use_container_width=True, help="Remembered only upon seeing answer"):
-                        process_sm2_review(1)
+            if not cram_cards:
+                st.info("Configure your filters above and click '🚀 Start Cram Session' to begin!")
+            else:
+                total_cram = len(cram_cards)
+                if st.session_state.cram_card_index >= total_cram:
+                    st.session_state.cram_card_index = 0
 
-                with col_good:
-                    if st.button("🟡 Good (2)", use_container_width=True, help="Correct response with hesitation"):
-                        process_sm2_review(2)
+                curr_c_idx = st.session_state.cram_card_index
+                curr_c_card = cram_cards[curr_c_idx]
 
-                with col_easy:
-                    if st.button("🟢 Easy (3)", use_container_width=True, help="Perfect, instant recall"):
-                        process_sm2_review(3)
+                st.markdown(f"**Cram Card {curr_c_idx + 1} of {total_cram}**")
+                st.progress((curr_c_idx + 1) / total_cram)
+
+                with st.container(border=True):
+                    st.caption(f"Cram Mode | Type: `{curr_c_card.get('card_type', 'concept').upper()}`")
+                    
+                    st.markdown("### Question / Prompt")
+                    st.write(curr_c_card.get("front", ""))
+                    if curr_c_card.get("code_block"):
+                        st.code(curr_c_card.get("code_block"))
+
+                    if st.session_state.cram_is_flipped:
+                        st.divider()
+                        st.markdown("### Answer / Explanation")
+                        st.write(curr_c_card.get("back", ""))
+                        if curr_c_card.get("explanation"):
+                            st.info(curr_c_card.get("explanation"))
+                        if curr_c_card.get("media_link"):
+                            render_media(curr_c_card.get("media_link"))
+
+                col_c_prev, col_c_flip, col_c_next = st.columns([1, 2, 1])
+
+                with col_c_prev:
+                    if st.button("⬅️ Previous", key="cram_prev_btn", use_container_width=True, disabled=(curr_c_idx == 0)):
+                        st.session_state.cram_card_index -= 1
+                        st.session_state.cram_is_flipped = False
+                        st.rerun()
+
+                with col_c_flip:
+                    c_flip_label = "🙈 Hide Answer" if st.session_state.cram_is_flipped else "🔄 Flip Card"
+                    if st.button(c_flip_label, key="cram_flip_btn", type="primary", use_container_width=True):
+                        st.session_state.cram_is_flipped = not st.session_state.cram_is_flipped
+                        st.rerun()
+
+                with col_c_next:
+                    if st.button("Next ➡️", key="cram_next_btn", use_container_width=True, disabled=(curr_c_idx == total_cram - 1)):
+                        st.session_state.cram_card_index += 1
+                        st.session_state.cram_is_flipped = False
+                        st.rerun()
+
+                if st.session_state.cram_is_flipped and update_sm2_in_cram:
+                    st.markdown("---")
+                    st.markdown("#### Optional SM-2 Rating:")
+                    col_ca, col_ch, col_cg, col_ce = st.columns(4)
+                    
+                    def process_cram_sm2(q_score: int):
+                        n_rep, n_ef, n_int, n_rev = calculate_sm2(
+                            quality=q_score,
+                            repetition_count=curr_c_card.get("repetition_count", 0),
+                            ease_factor=curr_c_card.get("ease_factor", 2.5),
+                            interval_days=curr_c_card.get("interval_days", 0)
+                        )
+                        u_card = curr_c_card.copy()
+                        u_card["repetition_count"] = n_rep
+                        u_card["ease_factor"] = n_ef
+                        u_card["interval_days"] = n_int
+                        u_card["next_review_at"] = n_rev
+                        u_card["mastery_level"] = n_rep
+                        save_card(st.session_state.current_folder, st.session_state.current_deck, u_card)
+                        
+                        if st.session_state.cram_card_index < total_cram - 1:
+                            st.session_state.cram_card_index += 1
+                        st.session_state.cram_is_flipped = False
+                        st.rerun()
+
+                    with col_ca:
+                        if st.button("🔴 Blackout", key="cram_sm2_0", use_container_width=True): process_cram_sm2(0)
+                    with col_ch:
+                        if st.button("🟠 Hard", key="cram_sm2_1", use_container_width=True): process_cram_sm2(1)
+                    with col_cg:
+                        if st.button("🟡 Good", key="cram_sm2_2", use_container_width=True): process_cram_sm2(2)
+                    with col_ce:
+                        if st.button("🟢 Easy", key="cram_sm2_3", use_container_width=True): process_cram_sm2(3)
 
     # SUB-TAB 3: AGENTIC RAG CHAT ASSISTANT
     with deck_tab_chat:
@@ -992,7 +1141,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
             )
             st.iframe(src=graph_html, height=580)
 
-# VIEW 2: INDIVIDUAL FOLDER VIEW (List of Decks)
+# VIEW 2: INDIVIDUAL FOLDER VIEW (List of Decks & Folder-Wide Cram)
 elif st.session_state.current_folder is not None:
     col_header, col_f_actions = st.columns([3, 1])
     with col_header:
@@ -1018,29 +1167,179 @@ elif st.session_state.current_folder is not None:
 
     st.divider()
 
-    if st.button("➕ Add New Deck"):
-        new_deck_popup()
+    # Folder View Sub-Tabs
+    folder_tab_decks, folder_tab_cram = st.tabs(["📁 Decks Overview", "⚡ Folder Cram Session"])
 
-    st.subheader("Decks")
-    decks = get_decks_in_folder(st.session_state.current_folder)
+    # SUB-TAB 1: DECKS LIST
+    with folder_tab_decks:
+        if st.button("➕ Add New Deck", type="primary"):
+            new_deck_popup()
 
-    for d in decks:
-        col_d_btn, col_d_ren, col_d_del = st.columns([4, 1, 1])
-        with col_d_btn:
-            if st.button(d, key=f"deck_btn_{d}", use_container_width=True):
-                st.session_state.current_deck = d
-                st.session_state.study_card_index = 0
-                st.session_state.study_is_flipped = False
+        st.subheader("Decks")
+        decks = get_decks_in_folder(st.session_state.current_folder)
+
+        if not decks:
+            st.info("No decks in this folder yet. Click '➕ Add New Deck' above to create one!")
+        else:
+            for d in decks:
+                col_d_btn, col_d_ren, col_d_del = st.columns([4, 1, 1])
+                with col_d_btn:
+                    if st.button(d, key=f"deck_btn_{d}", use_container_width=True):
+                        st.session_state.current_deck = d
+                        st.session_state.study_card_index = 0
+                        st.session_state.study_is_flipped = False
+                        st.rerun()
+                with col_d_ren:
+                    if st.button("✏️", key=f"ren_deck_{d}"):
+                        rename_deck_popup(d)
+                with col_d_del:
+                    with st.popover("🗑️", key=f"del_deck_pop_{d}"):
+                        st.warning(f"Delete deck '{d}'?")
+                        if st.button("Confirm Delete", key=f"confirm_del_deck_{d}", type="primary"):
+                            delete_deck(st.session_state.current_folder, d)
+                            st.rerun()
+
+    # SUB-TAB 2: FOLDER-WIDE CRAM SESSION
+    with folder_tab_cram:
+        st.subheader(f"⚡ Cross-Deck Cramming ({st.session_state.current_folder})")
+        st.caption("Review cards pulled from ALL decks inside this folder, filtered by target tags or difficulty.")
+
+        folder_tags = get_all_folder_tags(st.session_state.current_folder)
+
+        with st.expander("⚙️ Configure Folder Cram Session", expanded=not st.session_state.cram_cards):
+            fc1, fc2, fc3 = st.columns(3)
+            with fc1:
+                f_cram_tags = st.multiselect(
+                    "Target Tags (Across Decks)",
+                    options=folder_tags,
+                    format_func=lambda t: f"#{t}",
+                    key=f"folder_cram_tags_{st.session_state.current_folder}"
+                )
+            with fc2:
+                f_cram_difficulty = st.selectbox(
+                    "Card Focus",
+                    options=["all", "hard", "unseen"],
+                    format_func=lambda x: {"all": "All Matching Cards", "hard": "Hard Cards (EF < 2.3)", "unseen": "Unseen / New Cards"}[x],
+                    key=f"folder_cram_diff_{st.session_state.current_folder}"
+                )
+            with fc3:
+                f_cram_limit = st.number_input(
+                    "Max Cards Limit (0 = All)", 
+                    min_value=0, max_value=200, value=0,
+                    key=f"folder_cram_lim_{st.session_state.current_folder}"
+                )
+
+            f_update_sm2 = st.checkbox(
+                "🔄 Update SM-2 Spaced Repetition Intervals",
+                value=False,
+                key=f"folder_sm2_chk_{st.session_state.current_folder}",
+                help="If unchecked, cramming won't impact long-term review dates."
+            )
+
+            if st.button("🚀 Start Folder Cram Session", type="primary", use_container_width=True):
+                # Leaving deck_name=None fetches across all decks in this folder
+                fetched_folder_cards = load_cram_cards(
+                    folder_name=st.session_state.current_folder,
+                    deck_name=None,
+                    selected_tags=f_cram_tags,
+                    difficulty_filter=f_cram_difficulty,
+                    card_limit=f_cram_limit
+                )
+                st.session_state.cram_cards = fetched_folder_cards
+                st.session_state.cram_card_index = 0
+                st.session_state.cram_is_flipped = False
                 st.rerun()
-        with col_d_ren:
-            if st.button("✏️", key=f"ren_deck_{d}"):
-                rename_deck_popup(d)
-        with col_d_del:
-            with st.popover("🗑️", key=f"del_deck_pop_{d}"):
-                st.warning(f"Delete deck '{d}'?")
-                if st.button("Confirm Delete", key=f"confirm_del_deck_{d}", type="primary"):
-                    delete_deck(st.session_state.current_folder, d)
+
+        f_cram_cards = st.session_state.cram_cards
+
+        if not f_cram_cards:
+            st.info("Configure your filters above and click '🚀 Start Folder Cram Session' to begin!")
+        else:
+            total_f_cram = len(f_cram_cards)
+            if st.session_state.cram_card_index >= total_f_cram:
+                st.session_state.cram_card_index = 0
+
+            curr_fc_idx = st.session_state.cram_card_index
+            curr_fc_card = f_cram_cards[curr_fc_idx]
+
+            st.markdown(f"**Cram Card {curr_fc_idx + 1} of {total_f_cram}**")
+            st.progress((curr_fc_idx + 1) / total_f_cram)
+
+            with st.container(border=True):
+                card_deck_origin = curr_fc_card.get("deck_name", "Unknown Deck")
+                card_type = curr_fc_card.get("card_type", "concept").upper()
+                
+                st.caption(f"Deck: `{card_deck_origin}` | Type: `{card_type}`")
+                
+                st.markdown("### Question / Prompt")
+                st.write(curr_fc_card.get("front", ""))
+                if curr_fc_card.get("code_block"):
+                    st.code(curr_fc_card.get("code_block"))
+
+                if st.session_state.cram_is_flipped:
+                    st.divider()
+                    st.markdown("### Answer / Explanation")
+                    st.write(curr_fc_card.get("back", ""))
+                    if curr_fc_card.get("explanation"):
+                        st.info(curr_fc_card.get("explanation"))
+                    if curr_fc_card.get("media_link"):
+                        render_media(curr_fc_card.get("media_link"))
+
+            col_fc_prev, col_fc_flip, col_fc_next = st.columns([1, 2, 1])
+
+            with col_fc_prev:
+                if st.button("⬅️ Previous", key="fcram_prev_btn", use_container_width=True, disabled=(curr_fc_idx == 0)):
+                    st.session_state.cram_card_index -= 1
+                    st.session_state.cram_is_flipped = False
                     st.rerun()
+
+            with col_fc_flip:
+                fc_flip_label = "🙈 Hide Answer" if st.session_state.cram_is_flipped else "🔄 Flip Card"
+                if st.button(fc_flip_label, key="fcram_flip_btn", type="primary", use_container_width=True):
+                    st.session_state.cram_is_flipped = not st.session_state.cram_is_flipped
+                    st.rerun()
+
+            with col_fc_next:
+                if st.button("Next ➡️", key="fcram_next_btn", use_container_width=True, disabled=(curr_fc_idx == total_f_cram - 1)):
+                    st.session_state.cram_card_index += 1
+                    st.session_state.cram_is_flipped = False
+                    st.rerun()
+
+            if st.session_state.cram_is_flipped and f_update_sm2:
+                st.markdown("---")
+                st.markdown("#### Optional SM-2 Rating:")
+                col_fca, col_fch, col_fcg, col_fce = st.columns(4)
+                
+                def process_folder_cram_sm2(q_score: int):
+                    n_rep, n_ef, n_int, n_rev = calculate_sm2(
+                        quality=q_score,
+                        repetition_count=curr_fc_card.get("repetition_count", 0),
+                        ease_factor=curr_fc_card.get("ease_factor", 2.5),
+                        interval_days=curr_fc_card.get("interval_days", 0)
+                    )
+                    u_card = curr_fc_card.copy()
+                    u_card["repetition_count"] = n_rep
+                    u_card["ease_factor"] = n_ef
+                    u_card["interval_days"] = n_int
+                    u_card["next_review_at"] = n_rev
+                    u_card["mastery_level"] = n_rep
+                    
+                    # Save back to its parent deck origin
+                    save_card(st.session_state.current_folder, curr_fc_card.get("deck_name"), u_card)
+                    
+                    if st.session_state.cram_card_index < total_f_cram - 1:
+                        st.session_state.cram_card_index += 1
+                    st.session_state.cram_is_flipped = False
+                    st.rerun()
+
+                with col_fca:
+                    if st.button("🔴 Blackout", key="fcram_sm2_0", use_container_width=True): process_folder_cram_sm2(0)
+                with col_fch:
+                    if st.button("🟠 Hard", key="fcram_sm2_1", use_container_width=True): process_folder_cram_sm2(0)
+                with col_fcg:
+                    if st.button("🟡 Good", key="fcram_sm2_2", use_container_width=True): process_folder_cram_sm2(2)
+                with col_fce:
+                    if st.button("🟢 Easy", key="fcram_sm2_3", use_container_width=True): process_folder_cram_sm2(3)
 
 # VIEW 1: ALL FOLDERS VIEW
 else:
