@@ -4,3 +4,4 @@ sample_notes
 .venv
 test*
 study_assistant.db
+.streamlit
