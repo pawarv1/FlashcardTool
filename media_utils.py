@@ -1,6 +1,5 @@
 import os
 import uuid
-import io
 from PIL import Image
 
 MEDIA_DIR = os.path.join(".", "assets", "media")
@@ -11,14 +10,15 @@ def ensure_media_dir():
 
 def process_and_save_media(uploaded_file, max_width: int = 1200, quality: int = 80) -> str:
     """
-    Saves an uploaded media file. 
+    Saves an uploaded media file safely using a random UUID filename.
     If it's an image, compresses it to WebP format to minimize storage size.
-    Returns the relative local file path.
+    Returns the normalized relative local file path.
     """
     ensure_media_dir()
     
+    # Extract extension safely and generate random UUID base name
     file_ext = os.path.splitext(uploaded_file.name)[1].lower()
-    unique_name = f"{uuid.uuid4().hex}"
+    unique_name = uuid.uuid4().hex
     
     image_extensions = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"]
     
@@ -36,17 +36,17 @@ def process_and_save_media(uploaded_file, max_width: int = 1200, quality: int = 
                 new_height = int(max_width * aspect_ratio)
                 image = image.resize((max_width, new_height), Image.Resampling.LANCZOS)
             
-            # Save compressed image in WebP format
+            # Save compressed image in WebP format with secure UUID name
             output_filename = f"{unique_name}.webp"
             save_path = os.path.join(MEDIA_DIR, output_filename)
             
             image.save(save_path, "WEBP", quality=quality, optimize=True)
-            return save_path.replace("\\", "/") # Normalize path separators
+            return save_path.replace("\\", "/")  # Normalize path separators for cross-platform compatibility
             
         except Exception as e:
-            print(f"Image compression failed, saving raw file instead: {e}")
+            print(f"Warning: Image compression failed, saving raw file safely instead: {e}")
     
-    # Non-image files or fallback: save raw uploaded file
+    # Non-image files or fallback: save raw uploaded file with secure UUID name
     output_filename = f"{unique_name}{file_ext}"
     save_path = os.path.join(MEDIA_DIR, output_filename)
     

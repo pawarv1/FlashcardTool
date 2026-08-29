@@ -1,7 +1,12 @@
-__pycache__
-chroma_db_data
+__pycache__/
+chroma_db_data/
 sample_notes
 .venv
 test*
-study_assistant.db
+*.db
 .streamlit
+assets/media/
+/tmp/*.apkg
+*.zip
+*.pyc
+.env

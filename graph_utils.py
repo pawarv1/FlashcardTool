@@ -3,6 +3,7 @@ import networkx as nx
 from pyvis.network import Network
 from vector_utils import get_collection
 import numpy as np
+import html
 
 def generate_knowledge_graph_html(folder_name: str, deck_name: str, similarity_threshold: float = 0.45) -> str:
     """
@@ -49,10 +50,11 @@ def generate_knowledge_graph_html(folder_name: str, deck_name: str, similarity_t
         meta = metadatas[idx] if metadatas else {}
         front_text = meta.get("front") or (documents[idx] if documents else f"Card {idx+1}")
         card_type = meta.get("card_type", "concept").upper()
+        clean_front_text = html.escape(front_text)
         
         short_label = front_text[:30] + "..." if len(front_text) > 30 else front_text
 
-        tooltip_html = f"<b>Type:</b> {card_type}<br><b>Prompt:</b> {front_text}"
+        tooltip_html = f"<b>Type:</b> {html.escape(card_type)}<br><b>Prompt:</b> {clean_front_text}"
 
         net.add_node(
             n_id=card_id,
