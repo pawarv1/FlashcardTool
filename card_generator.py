@@ -16,6 +16,7 @@ class ProposedCard(BaseModel):
     back: str = Field(description="Direct, accurate answer")
     explanation: Optional[str] = Field(default=None, description="Memory hook or context snippet from source")
     media_link: Optional[str] = Field(default=None, description="Optional media URL or image path")
+    tags: Optional[str] = Field(default=None, description="Comma-separated topic tags (e.g., 'sorting, algorithms')")
 
 class FlashcardDraftResponse(BaseModel):
     proposed_cards: List[ProposedCard]
@@ -66,9 +67,13 @@ def generate_flashcards_from_chunks(document_chunks: list[str], user_instruction
                 })
 
                 if response and response.proposed_cards:
-                    new_cards = [card.model_dump() for card in response.proposed_cards]
-                    all_generated_cards.extend(new_cards)
-                    chunk_generated += len(new_cards)
+                    for card in response.proposed_cards:
+                        c_dict = card.model_dump()
+                        c_dict["source_type"] = "llm_generated"
+                        c_dict["mastery_level"] = 0
+                        all_generated_cards.append(c_dict)
+                        
+                    chunk_generated += len(response.proposed_cards)
 
                     if len(all_generated_cards) >= target_count:
                         return all_generated_cards[:target_count]
@@ -89,16 +94,14 @@ def generate_remediation_cards(question: str, reference_context: str, user_answe
         "Keep questions direct and answers structured for flashcard review."
     )
 
-    user_prompt = (
-        f"MISSED QUESTION: {question}\n\n"
-        f"REFERENCE CONTEXT: {reference_context}\n\n"
-        f"STUDENT'S ANSWER: {user_answer}\n\n"
-        f"FEEDBACK / EVALUATION: {feedback}"
-    )
-    
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
-        ("user", user_prompt)
+        ("user", (
+            "MISSED QUESTION: {question}\n\n"
+            "REFERENCE CONTEXT: {reference_context}\n\n"
+            "STUDENT'S ANSWER: {user_answer}\n\n"
+            "FEEDBACK / EVALUATION: {feedback}"
+        ))
     ])
     
     llm = ChatOllama(model="llama3.1", temperature=0.3)
@@ -107,9 +110,21 @@ def generate_remediation_cards(question: str, reference_context: str, user_answe
     chain = prompt | structured_llm
     
     try:
-        response: FlashcardDraftResponse = chain.invoke({})
+        response: FlashcardDraftResponse = chain.invoke({
+            "question": question,
+            "reference_context": reference_context,
+            "user_answer": user_answer,
+            "feedback": feedback
+        })
         if response and response.proposed_cards:
-            return [card.model_dump() for card in response.proposed_cards]
+            remediation_cards = []
+            for card in response.proposed_cards:
+                c_dict = card.model_dump()
+                c_dict["source_type"] = "quiz_remediation"
+                c_dict["mastery_level"] = 0
+                c_dict["tags"] = c_dict.get("tags") or "remediation, quiz_review"
+                remediation_cards.append(c_dict)
+            return remediation_cards
     except Exception as e:
         print(f"Warning: Remediation generation failed: {e}")
         

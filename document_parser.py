@@ -1,8 +1,10 @@
 import io
 import os
-from markitdown import MarkItDown
-import pandas as pd
 import json
+import pandas as pd
+from markitdown import MarkItDown
+
+md_parser = MarkItDown()
 
 def parse_ipynb_to_markdown(uploaded_file) -> str:
     """Extracts markdown text and code blocks from a Jupyter Notebook (.ipynb)."""
@@ -15,13 +17,20 @@ def parse_ipynb_to_markdown(uploaded_file) -> str:
         
         for cell in cells:
             cell_type = cell.get("cell_type")
-            source = "".join(cell.get("source", []))
+            raw_source = cell.get("source", "")
             
-            if cell_type == "markdown" and source.strip():
-                markdown_output.append(source.strip())
-            elif cell_type == "code" and source.strip():
+            if isinstance(raw_source, list):
+                source = "".join(raw_source)
+            else:
+                source = str(raw_source)
+            
+            clean_source = source.strip()
+            
+            if cell_type == "markdown" and clean_source:
+                markdown_output.append(clean_source)
+            elif cell_type == "code" and clean_source:
                 # Format code cells as markdown code blocks
-                markdown_output.append(f"```python\n{source.strip()}\n```")
+                markdown_output.append(f"```python\n{clean_source}\n```")
                 
         return "\n\n".join(markdown_output)
         
@@ -43,6 +52,7 @@ def parse_csv_direct_to_cards(uploaded_file) -> list[dict]:
         front_col = next((c for c in df.columns if c in ["front", "question", "prompt", "term"]), df.columns[0])
         back_col = next((c for c in df.columns if c in ["back", "answer", "definition", "summary"]), df.columns[1] if len(df.columns) > 1 else df.columns[0])
         media_col = next((c for c in df.columns if c in ["media_link", "media", "image", "url"]), None)
+        tags_col = next((c for c in df.columns if c in ["tags", "tag", "categories", "category"]), None)
         
         cards = []
         for _, row in df.iterrows():
@@ -56,6 +66,7 @@ def parse_csv_direct_to_cards(uploaded_file) -> list[dict]:
             explanation = str(row.get("explanation", "")).strip() if "explanation" in df.columns and pd.notna(row.get("explanation")) else None
             card_type = str(row.get("card_type", "concept")).strip() if "card_type" in df.columns and pd.notna(row.get("card_type")) else "concept"
             media_link = str(row.get(media_col, "")).strip() if media_col and pd.notna(row.get(media_col)) else None
+            tags = str(row.get(tags_col, "")).strip() if tags_col and pd.notna(row.get(tags_col)) else None
 
             cards.append({
                 "card_type": card_type,
@@ -64,6 +75,7 @@ def parse_csv_direct_to_cards(uploaded_file) -> list[dict]:
                 "code_block": code_block,
                 "explanation": explanation,
                 "media_link": media_link,
+                "tags": tags,
                 "source_type": f"csv_import:{uploaded_file.name}",
                 "mastery_level": 0
             })
@@ -83,18 +95,17 @@ def extract_text_from_file(uploaded_file) -> str:
     uploaded_file.seek(0)
 
     if filename.endswith((".txt", ".md")):
-        return uploaded_file.read().decode("utf-8")
+        return uploaded_file.read().decode("utf-8", errors="replace")
 
     # Jupyter Notebook handling
     if filename.endswith(".ipynb"):
         return parse_ipynb_to_markdown(uploaded_file)
 
-    md = MarkItDown()
     file_bytes = io.BytesIO(uploaded_file.read())
     file_ext = os.path.splitext(filename)[1]
     
     try:
-        result = md.convert_stream(file_bytes, file_extension=file_ext)
+        result = md_parser.convert_stream(file_bytes, file_extension=file_ext)
         return result.text_content
     except Exception as e:
         raise ValueError(f"Failed to parse file {filename}: {str(e)}")

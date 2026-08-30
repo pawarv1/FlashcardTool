@@ -1,4 +1,6 @@
 import os
+import zlib
+import tempfile
 import genanki
 from storage_utils import load_deck_cards
 
@@ -58,8 +60,9 @@ def generate_anki_deck_bytes(folder_name: str, deck_name: str) -> bytes:
     clean_folder = folder_name.strip().replace(" ", "_")
     clean_deck = deck_name.strip().replace(" ", "_").lower()
 
-    # Deterministic deck ID based on folder and deck names
-    deck_id = abs(hash(f"{clean_folder}_{clean_deck}")) % (10**9)
+    # Deterministic deck ID using Adler32 CRC hashing (cross-session stable)
+    deck_identifier_string = f"{clean_folder}::{clean_deck}"
+    deck_id = (zlib.adler32(deck_identifier_string.encode('utf-8')) & 0xffffffff) % (10**9)
     display_title = f"{folder_name} :: {deck_name}"
     
     anki_deck = genanki.Deck(deck_id, display_title)
@@ -94,17 +97,21 @@ def generate_anki_deck_bytes(folder_name: str, deck_name: str) -> bytes:
         )
         anki_deck.add_note(note)
 
-    output_path = f"/tmp/{clean_deck}.apkg"
-    package = genanki.Package(anki_deck)
-    if media_files:
-        package.media_files = list(set(media_files))
-        
-    package.write_to_file(output_path)
+    # Safe temp file handling with guaranteed cleanup
+    with tempfile.NamedTemporaryFile(suffix=".apkg", delete=False) as tmp_file:
+        tmp_path = tmp_file.name
 
-    with open(output_path, "rb") as f:
-        file_bytes = f.read()
+    try:
+        package = genanki.Package(anki_deck)
+        if media_files:
+            package.media_files = list(set(media_files))
+            
+        package.write_to_file(tmp_path)
 
-    if os.path.exists(output_path):
-        os.remove(output_path)
-
-    return file_bytes
+        with open(tmp_path, "rb") as f:
+            file_bytes = f.read()
+            
+        return file_bytes
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)

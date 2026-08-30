@@ -2,6 +2,7 @@ import random
 from typing import Optional, Literal
 from pydantic import BaseModel, Field
 from langchain_ollama import ChatOllama
+from langchain_core.prompts import ChatPromptTemplate
 from vector_utils import get_collection
 
 # Structured outputs using Pydantic
@@ -37,21 +38,26 @@ def generate_quiz_question(folder_name: Optional[str] = None, deck_name: Optiona
     elif clean_folder:
         where_filter = {"folder": clean_folder}
 
-    # Fetch candidate cards via vector search or random sampling
+    # Fetch candidate cards via vector search or random sampling with explicit includes
     if user_focus.strip():
         results = collection.query(
             query_texts=[user_focus.strip()],
             where=where_filter,
-            n_results=3
+            n_results=3,
+            include=["documents", "metadatas"]
         )
         docs = results.get("documents", [[]])[0]
         metas = results.get("metadatas", [[]])[0]
     else:
-        results = collection.get(where=where_filter, limit=30)
+        results = collection.get(
+            where=where_filter, 
+            limit=30,
+            include=["documents", "metadatas"]
+        )
         docs = results.get("documents", [])
         metas = results.get("metadatas", [])
 
-    if not docs:
+    if not docs or not metas or docs[0] is None:
         return None
 
     idx = random.randint(0, len(docs) - 1)
@@ -60,17 +66,18 @@ def generate_quiz_question(folder_name: Optional[str] = None, deck_name: Optiona
 
     focus_directive = f"The student explicitly requested to focus on: '{user_focus.strip()}'." if user_focus.strip() else ""
 
-    prompt = (
-        "You are an expert computer science professor writing an active-recall quiz question.\n"
-        "Based on the following flashcard document and metadata, write 1 short-answer quiz question to test the student's understanding.\n\n"
-        f"{focus_directive}\n\n"
-        f"FLASHCARD FRONT: {selected_meta.get('front', selected_doc)}\n"
-        f"FLASHCARD BACK: {selected_meta.get('back', '')}\n"
-        f"CARD TYPE: {selected_meta.get('card_type', 'concept')}"
-    )
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are an expert computer science professor writing an active-recall quiz question. Write 1 short-answer quiz question to test the student's understanding."),
+        ("user", (
+            f"{focus_directive}\n\n"
+            f"FLASHCARD FRONT: {selected_meta.get('front', selected_doc)}\n"
+            f"FLASHCARD BACK: {selected_meta.get('back', '')}\n"
+            f"CARD TYPE: {selected_meta.get('card_type', 'concept')}"
+        ))
+    ])
 
     try:
-        response: QuizQuestionSchema = question_generator_llm.invoke(prompt)
+        response: QuizQuestionSchema = question_generator_llm.invoke(prompt.format_messages())
         quiz_data = response.model_dump()
         quiz_data["source_meta"] = selected_meta
         return quiz_data
@@ -80,18 +87,23 @@ def generate_quiz_question(folder_name: Optional[str] = None, deck_name: Optiona
 
 def grade_user_answer(question: str, reference_context: str, user_answer: str) -> dict:
     """Grades student short-answer input against the reference flashcard context."""
-    prompt = (
-        "You are an encouraging and fair computer science professor grading a short-answer quiz.\n\n"
-        f"QUESTION: {question}\n"
-        f"REFERENCE CONTEXT: {reference_context}\n"
-        f"STUDENT ANSWER: {user_answer}\n\n"
-        "GRADING RULES:\n"
-        "1. Focus on CORE CONCEPTUAL ACCURACY. Reward full points if the core term or concept is correctly explained.\n"
-        "2. Do NOT dock points for omitting optional syntax or minor extra details unless explicitly asked by the question."
-    )
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", (
+            "You are an encouraging and fair computer science professor grading a short-answer quiz.\n"
+            "GRADING RULES:\n"
+            "1. Focus on CORE CONCEPTUAL ACCURACY. Reward full points if the core term or concept is correctly explained.\n"
+            "2. Do NOT dock points for omitting optional syntax or minor extra details unless explicitly asked by the question."
+        )),
+        ("user", (
+            f"QUESTION: {question}\n"
+            f"REFERENCE CONTEXT: {reference_context}\n"
+            f"STUDENT ANSWER: {user_answer}"
+        ))
+    ])
 
     try:
-        response: QuizGradeSchema = grader_llm.invoke(prompt)
+        response: QuizGradeSchema = grader_llm.invoke(prompt.format_messages())
         return response.model_dump()
     except Exception as e:
         print(f"Error grading quiz answer: {e}")
