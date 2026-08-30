@@ -11,7 +11,7 @@ def ensure_media_dir():
 def process_and_save_media(uploaded_file, max_width: int = 1200, quality: int = 80) -> str:
     """
     Saves an uploaded media file safely using a random UUID filename.
-    If it's an image, compresses it to WebP format to minimize storage size.
+    If it's an image, compresses it to WebP format to minimize storage size while preserving transparency.
     Returns the normalized relative local file path.
     """
     ensure_media_dir()
@@ -26,8 +26,10 @@ def process_and_save_media(uploaded_file, max_width: int = 1200, quality: int = 
         try:
             image = Image.open(uploaded_file)
             
-            # Convert RGBA/P modes to RGB for standard saving if necessary
-            if image.mode in ("RGBA", "P"):
+            # Handle palette/indexed images safely without destroying transparency
+            if image.mode == "P":
+                image = image.convert("RGBA" if "transparency" in image.info else "RGB")
+            elif image.mode not in ("RGB", "RGBA"):
                 image = image.convert("RGB")
             
             # Resize image if width exceeds max_width while maintaining aspect ratio
@@ -40,8 +42,9 @@ def process_and_save_media(uploaded_file, max_width: int = 1200, quality: int = 
             output_filename = f"{unique_name}.webp"
             save_path = os.path.join(MEDIA_DIR, output_filename)
             
+            # Save using WebP
             image.save(save_path, "WEBP", quality=quality, optimize=True)
-            return save_path.replace("\\", "/")  # Normalize path separators for cross-platform compatibility
+            return save_path.replace("\\", "/")
             
         except Exception as e:
             print(f"Warning: Image compression failed, saving raw file safely instead: {e}")

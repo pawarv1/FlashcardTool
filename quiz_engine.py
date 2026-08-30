@@ -5,7 +5,6 @@ from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 from vector_utils import get_collection
 
-# Structured outputs using Pydantic
 class QuizQuestionSchema(BaseModel):
     question: str = Field(description="Conceptual or technical short-answer quiz question based on the card front/back.")
     reference_context: str = Field(description="Summary or direct quote from the card containing the correct answer.")
@@ -15,7 +14,6 @@ class QuizGradeSchema(BaseModel):
     grade_percent: int = Field(description="Numeric score from 0 to 100 based on answer accuracy.")
     feedback: str = Field(description="1-2 sentences of encouraging, constructive feedback explaining the score.")
 
-# Instantiate LLM
 llm = ChatOllama(model="llama3.1", temperature=0.2)
 question_generator_llm = llm.with_structured_output(QuizQuestionSchema)
 grader_llm = llm.with_structured_output(QuizGradeSchema)

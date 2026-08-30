@@ -1,9 +1,9 @@
+import os
 import tempfile
-import networkx as nx
+import html
+import numpy as np
 from pyvis.network import Network
 from vector_utils import get_collection
-import numpy as np
-import html
 
 def generate_knowledge_graph_html(folder_name: str, deck_name: str, similarity_threshold: float = 0.45) -> str:
     """
@@ -29,7 +29,7 @@ def generate_knowledge_graph_html(folder_name: str, deck_name: str, similarity_t
         print(f"Error querying vectors for graph: {e}")
         return "<h4 style='color: #e6edf3;'>Unable to load knowledge graph vectors.</h4>"
 
-    if not results or not results["ids"]:
+    if not results or not results.get("ids"):
         return "<div style='color: #90a4ae; padding: 20px; text-align: center;'>No cards found in this deck to map. Add flashcards to generate a graph!</div>"
 
     ids = results["ids"]
@@ -54,12 +54,12 @@ def generate_knowledge_graph_html(folder_name: str, deck_name: str, similarity_t
         
         short_label = front_text[:30] + "..." if len(front_text) > 30 else front_text
 
-        tooltip_html = f"<b>Type:</b> {html.escape(card_type)}<br><b>Prompt:</b> {clean_front_text}"
+        tooltip_text = f"Type: {card_type}\nPrompt: {clean_front_text}"
 
         net.add_node(
             n_id=card_id,
             label=short_label,
-            title=tooltip_html,
+            title=tooltip_text,
             color="#007acc",
             borderWidth=2,
             shape="dot",
@@ -91,11 +91,11 @@ def generate_knowledge_graph_html(folder_name: str, deck_name: str, similarity_t
                         source=ids[i],
                         to=ids[j],
                         value=edge_width,
-                        color={"color": "#4fc3f7", "highlight": "#00e5ff", "opacity": 0.6},  # High-contrast cyan
+                        color={"color": "#4fc3f7", "highlight": "#00e5ff", "opacity": 0.6},
                         title=f"Similarity: {sim_score:.2f}"
                     )
 
-    # Physics Engine Styling (Smooth Dark Mode Forces)
+    # Physics Engine Styling
     net.set_options("""
     {
       "nodes": {
@@ -112,10 +112,15 @@ def generate_knowledge_graph_html(folder_name: str, deck_name: str, similarity_t
     }
     """)
 
-    # Export to HTML string
+    # Export to HTML string with guaranteed file cleanup
     with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp_file:
-        net.save_graph(tmp_file.name)
-        with open(tmp_file.name, "r", encoding="utf-8") as f:
-            html_content = f.read()
+        tmp_path = tmp_file.name
 
-    return html_content
+    try:
+        net.save_graph(tmp_path)
+        with open(tmp_path, "r", encoding="utf-8") as f:
+            html_content = f.read()
+        return html_content
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)

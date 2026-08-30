@@ -1,10 +1,10 @@
 from datetime import datetime, timedelta
-from typing import Dict, Tuple
+from typing import Tuple
 
 def calculate_sm2(quality: int, repetition_count: int, ease_factor: float, interval_days: int) -> Tuple[int, float, int, str]:
     """
     Calculates updated SM-2 parameters based on recall performance quality (0 to 3).
-    Returns: (new_repetition_count, new_ease_factor, new_interval_days, next_review_iso_str)
+    Returns: (new_repetition_count, new_ease_factor, new_interval_days, next_review_str)
     """
     # Clamp quality grade between 0 and 3
     q = max(0, min(3, quality))
@@ -16,7 +16,7 @@ def calculate_sm2(quality: int, repetition_count: int, ease_factor: float, inter
 
     # 2. Update Repetition Count & Interval
     if q < 2:
-        # Failed recall -> Reset progress
+        # Failed recall -> Reset progress back to 1-day interval
         new_rep = 0
         new_interval = 1
     else:
@@ -27,10 +27,10 @@ def calculate_sm2(quality: int, repetition_count: int, ease_factor: float, inter
         elif new_rep == 2:
             new_interval = 6
         else:
-            new_interval = int(round(interval_days * new_ef))
+            new_interval = max(1, int(round(interval_days * new_ef)))
 
-    # 3. Calculate Next Review Timestamp (ISO format)
+    # 3. Calculate Next Review Timestamp (SQLite-compatible string)
     next_review_dt = datetime.now() + timedelta(days=new_interval)
-    next_review_str = next_review_dt.isoformat()
+    next_review_str = next_review_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     return new_rep, round(new_ef, 2), new_interval, next_review_str

@@ -30,13 +30,15 @@ def search_deck_cards(query: str, folder_name: Optional[str] = None, deck_name: 
         results = collection.query(
             query_texts=[query],
             n_results=3,
-            where=where_filter
+            where=where_filter,
+            include=["documents", "metadatas"]
         )
         
-        if results and results["documents"] and results["documents"][0]:
+        if results and results.get("documents") and results["documents"][0]:
             formatted_cards = []
             for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
-                card_str = f"**Front:** {meta.get('front', doc)}\n**Back:** {meta.get('back', '')}"
+                safe_meta = meta or {}
+                card_str = f"**Front:** {safe_meta.get('front', doc)}\n**Back:** {safe_meta.get('back', '')}"
                 formatted_cards.append(card_str)
             
             return "\n\n---\n\n".join(formatted_cards)
@@ -63,8 +65,8 @@ def agent_node(state: State):
     system_prompt = SystemMessage(content=(
         f"You are a helpful study assistant AI. The user currently has the deck '{deck}' "
         f"inside folder '{folder}' open.\n"
-        "Use the search_deck_cards tool whenever the user asks about specific flashcards, "
-        "concepts, or practice questions related to their current study material."
+        "When using the `search_deck_cards` tool, ALWAYS pass folder_name='" + folder + "' "
+        "and deck_name='" + deck + "' unless the user explicitly asks to search elsewhere."
     ))
     
     messages = [system_prompt] + state["messages"]
