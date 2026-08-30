@@ -1,75 +1,36 @@
+import os
+import io
+import pandas as pd
 from typing import get_args
+from datetime import datetime
+from gtts import gTTS
 import streamlit as st
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage
+
+# Local Modules
+from db import init_db, auto_heal_chroma_sync
 from document_parser import get_markdown_chunks, parse_csv_direct_to_cards
 from card_generator import generate_flashcards_from_chunks, CardTypeEnum, generate_remediation_cards
 from vector_utils import check_candidate_duplicates
 from storage_utils import (
-    create_folder, 
-    create_deck, 
-    get_all_folders, 
-    get_decks_in_folder, 
-    rename_folder,
-    delete_folder,
-    rename_deck,
-    delete_deck,
-    save_card,
-    save_card_batch,
-    load_deck_cards, 
-    delete_card,
-    get_deck_analytics,
-    log_quiz_attempt,
-    get_quiz_analytics,
-    get_review_forecast,
-    get_all_deck_tags,
-    load_cram_cards,
-    get_all_folder_tags
+    create_folder, create_deck, get_all_folders, get_decks_in_folder, 
+    rename_folder, delete_folder, rename_deck, delete_deck, save_card, 
+    save_card_batch, load_deck_cards, delete_card, get_deck_analytics, 
+    log_quiz_attempt, get_quiz_analytics, get_review_forecast, get_all_deck_tags, 
+    load_cram_cards, get_all_folder_tags
 )
 from anki_utils import generate_anki_deck_bytes
 from agent import agent_graph
 from quiz_engine import generate_quiz_question, grade_user_answer
-from db import init_db, auto_heal_chroma_sync
 from sm2_utils import calculate_sm2
 from graph_utils import generate_knowledge_graph_html
-import pandas as pd
-import io
-from gtts import gTTS
-import os
 from media_utils import process_and_save_media
 from backup_utils import create_system_backup_zip, restore_system_from_zip
-from datetime import datetime
 
-def generate_tts_audio_bytes(text: str, lang: str = "en") -> io.BytesIO:
-    """Converts a text string into MP3 audio bytes in memory."""
-    clean_text = text.strip()
-    if not clean_text:
-        return None
-    
-    tts = gTTS(text=clean_text, lang=lang, slow=False)
-    audio_fp = io.BytesIO()
-    tts.write_to_fp(audio_fp)
-    audio_fp.seek(0)
-    return audio_fp
+# -------------------------------------------------------------------
+# INITIALIZATION & SESSION STATE
+# -------------------------------------------------------------------
 
-def render_media(media_path: str):
-    if not media_path:
-        return
-    
-    clean_path = media_path.lower()
-    image_exts = [".png", ".jpg", ".jpeg", ".gif", ".webp"]
-    
-    # Check if path is a web URL or local file path
-    is_web_url = clean_path.startswith("http://") or clean_path.startswith("https://")
-    
-    if any(clean_path.endswith(ext) for ext in image_exts) or is_web_url:
-        if os.path.exists(media_path) or is_web_url:
-            st.image(media_path, use_column_width=True)
-        else:
-            st.caption(f"⚠️ Attachment not found: `{media_path}`")
-    else:
-        st.markdown(f"🔗 [View Attached Media]({media_path})")
-
-# 1. DATABASE & VECTOR INITIALIZATION
 @st.cache_resource
 def setup_database():
     """Runs database initialization and vector sync healing once per app startup."""
@@ -79,48 +40,81 @@ def setup_database():
 
 setup_database()
 
-CARD_TYPES = get_args(CardTypeEnum) if get_args(CardTypeEnum) else ["concept", "code_snippet", "definition", "formula", "comparison", "example"]
+CARD_TYPES = get_args(CardTypeEnum) if get_args(CardTypeEnum) else [
+    "concept", "code_snippet", "definition", "formula", "comparison", "example"
+]
 
-# PAGE CONFIG
 st.set_page_config(
     page_title="Agentic RAG Study Assistant", 
     page_icon="📚", 
     layout="wide"
 )
 
-st.title("Flashcard tool")
+def init_session_state():
+    """Consolidates session state initialization."""
+    defaults = {
+        "current_folder": None,
+        "current_deck": None,
+        "study_card_index": 0,
+        "study_is_flipped": False,
+        "cram_mode_active": False,
+        "cram_card_index": 0,
+        "cram_is_flipped": False,
+        "cram_cards": [],
+        "draft_cards": None
+    }
+    for key, val in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
 
-if "current_folder" not in st.session_state:
-    st.session_state.current_folder = None
+init_session_state()
 
-if "current_deck" not in st.session_state:
-    st.session_state.current_deck = None
+# -------------------------------------------------------------------
+# HELPER RENDERERS
+# -------------------------------------------------------------------
 
-if "study_card_index" not in st.session_state:
-    st.session_state.study_card_index = 0
+def generate_tts_audio_bytes(text: str, lang: str = "en") -> io.BytesIO:
+    """Converts a text string into MP3 audio bytes in memory."""
+    clean_text = text.strip()
+    if not clean_text:
+        return None
+    try:
+        tts = gTTS(text=clean_text, lang=lang, slow=False)
+        audio_fp = io.BytesIO()
+        tts.write_to_fp(audio_fp)
+        audio_fp.seek(0)
+        return audio_fp
+    except Exception as e:
+        print(f"TTS Generation failed: {e}")
+        return None
 
-if "study_is_flipped" not in st.session_state:
-    st.session_state.study_is_flipped = False
+def render_media(media_path: str):
+    """Renders local or remote media attachments."""
+    if not media_path:
+        return
+    
+    clean_path = media_path.lower()
+    image_exts = [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+    is_web_url = clean_path.startswith("http://") or clean_path.startswith("https://")
+    
+    if any(clean_path.endswith(ext) for ext in image_exts) or is_web_url:
+        if os.path.exists(media_path) or is_web_url:
+            st.image(media_path, use_container_width=True)
+        else:
+            st.caption(f"⚠️ Attachment not found: `{media_path}`")
+    else:
+        st.markdown(f"🔗 [View Attached Media]({media_path})")
 
-if "cram_mode_active" not in st.session_state:
-    st.session_state.cram_mode_active = False
+# -------------------------------------------------------------------
+# SIDEBAR: BACKUP & RESTORE
+# -------------------------------------------------------------------
 
-if "cram_card_index" not in st.session_state:
-    st.session_state.cram_card_index = 0
-
-if "cram_is_flipped" not in st.session_state:
-    st.session_state.cram_is_flipped = False
-
-if "cram_cards" not in st.session_state:
-    st.session_state.cram_cards = []
-
-# --- SIDEBAR: SYSTEM MAINTENANCE & BACKUP ---
 with st.sidebar:
+    st.title("📚 Study Assistant")
     st.divider()
     with st.expander("⚙️ Backup & Restore Data", expanded=False):
         st.caption("Export or restore your complete database, vector collections, and media attachments.")
 
-        # 1. BACKUP GENERATION & DOWNLOAD
         st.markdown("#### 📦 Export System Backup")
         if st.button("Generate Backup ZIP", type="primary", use_container_width=True):
             with st.spinner("Bundling database, vectors, and media assets..."):
@@ -138,7 +132,6 @@ with st.sidebar:
 
         st.divider()
 
-        # 2. RESTORE FROM ZIP UPLOAD
         st.markdown("#### 📂 Restore System Backup")
         uploaded_backup = st.file_uploader(
             "Upload Backup ZIP", 
@@ -156,11 +149,14 @@ with st.sidebar:
                     else:
                         st.error("Failed to restore system backup. Ensure it is a valid backup ZIP.")
 
-# DIALOG POPUPS
+# -------------------------------------------------------------------
+# DIALOG MODALS
+# -------------------------------------------------------------------
+
 @st.dialog("New Folder")
 def new_folder_popup():
     new_folder_name = st.text_input("Enter New Folder Name")
-    if st.button("Create"):
+    if st.button("Create", type="primary"):
         if new_folder_name.strip():
             create_folder(new_folder_name.strip())
             st.rerun()
@@ -178,7 +174,7 @@ def rename_folder_popup(folder_name: str):
 @st.dialog("New Deck")
 def new_deck_popup():
     new_deck_name = st.text_input("Enter New Deck Name")
-    if st.button("Create"):
+    if st.button("Create", type="primary"):
         if new_deck_name.strip():
             create_deck(st.session_state.current_folder, new_deck_name.strip())
             st.rerun()
@@ -199,19 +195,15 @@ def new_card_popup():
     tags_input = st.text_input("Tags (Optional, comma-separated)", placeholder="e.g. midterm, algorithms, priority")
     front = st.text_area("Front (Question / Prompt)")
     back = st.text_area("Back (Answer / Summary)")
-    code_block = st.text_area("Code Block (Optional)", help="Paste any relevant code snippet here")
-    explanation = st.text_area("Explanation (Optional)", help="Additional detail or context for review")
+    code_block = st.text_area("Code Block (Optional)")
+    explanation = st.text_area("Explanation (Optional)")
 
-    uploaded_media_file = st.file_uploader(
-        "Upload Media Attachment (Image/Diagram)", 
-        type=["png", "jpg", "jpeg", "webp", "gif"]
-    )
+    uploaded_media_file = st.file_uploader("Upload Media Attachment", type=["png", "jpg", "jpeg", "webp", "gif"])
     media_link_input = st.text_input("OR Media Link / URL (Optional)")
 
     if st.button("Save Card", type="primary"):
         if front.strip() and back.strip():
             final_media_path = None
-            
             if uploaded_media_file:
                 final_media_path = process_and_save_media(uploaded_media_file)
             elif media_link_input.strip():
@@ -235,7 +227,6 @@ def new_card_popup():
                 deck_name=st.session_state.current_deck,
                 card_data=card_data
             )
-            st.success("Card added.")
             st.rerun()
         else:
             st.warning("Both Front and Back text are required.")
@@ -253,25 +244,15 @@ def edit_card_popup(card: dict):
     updated_code = st.text_area("Code Block (Optional)", value=card.get("code_block") or "")
     updated_explanation = st.text_area("Explanation (Optional)", value=card.get("explanation") or "")
     
-    # Render existing media preview if present
     existing_media = card.get("media_link")
     if existing_media:
         st.markdown("**Current Media Attachment:**")
         render_media(existing_media)
     
-    uploaded_media_file = st.file_uploader(
-        "Replace / Upload Media Attachment", 
-        type=["png", "jpg", "jpeg", "webp", "gif"],
-        key=f"edit_file_{card.get('card_id')}"
-    )
-    updated_media_url = st.text_input(
-        "OR Media Link / URL", 
-        value=existing_media or "", 
-        key=f"edit_url_{card.get('card_id')}"
-    )
+    uploaded_media_file = st.file_uploader("Replace / Upload Media", type=["png", "jpg", "jpeg", "webp", "gif"], key=f"edit_file_{card.get('card_id')}")
+    updated_media_url = st.text_input("OR Media Link / URL", value=existing_media or "", key=f"edit_url_{card.get('card_id')}")
 
     st.divider()
-
     col_save, col_delete = st.columns([1, 1])
 
     with col_save:
@@ -315,56 +296,37 @@ def edit_card_popup(card: dict):
                 delete_card(card_id=card.get("card_id"))
                 st.rerun()
 
-# DOCUMENT INGESTION & AI DRAFTING DIALOG
 @st.dialog("📄 Ingest Document & Generate Cards", width="large")
 def ingest_document_popup():
-    uploaded_file = st.file_uploader(
-        "Upload Study Document", 
-        type=["pdf", "docx", "pptx", "txt", "md", "csv", "html", "ipynb"]
-    )
-    instructions = st.text_input(
-        "Focus Directive (Optional)", 
-        placeholder="e.g. Focus on search algorithms and time complexity"
-    )
+    uploaded_file = st.file_uploader("Upload Document", type=["pdf", "docx", "pptx", "txt", "md", "csv", "html", "ipynb"])
+    instructions = st.text_input("Focus Directive (Optional)", placeholder="e.g. Focus on search algorithms")
     num_cards = st.slider("Target Number of Cards", min_value=3, max_value=20, value=8)
-
-    if "draft_cards" not in st.session_state:
-        st.session_state.draft_cards = None
 
     if st.button("⚙️ Parse & Generate Drafts", type="primary", disabled=not uploaded_file):
         file_ext = os.path.splitext(uploaded_file.name)[1].lower()
 
-        # PATH A: Structured CSV Import (Direct, Instant, Bypasses LLM)
         if file_ext == ".csv":
             with st.spinner("Parsing CSV rows directly into flashcards..."):
                 raw_drafts = parse_csv_direct_to_cards(uploaded_file)
-                
-                flagged_drafts = check_candidate_duplicates(
+                st.session_state.draft_cards = check_candidate_duplicates(
                     candidate_cards=raw_drafts,
                     folder_name=st.session_state.current_folder,
                     deck_name=st.session_state.current_deck
                 )
-                st.session_state.draft_cards = flagged_drafts
-
-        # PATH B: Unstructured Document Import (PDF, DOCX, TXT via Llama 3.1)
         else:
             with st.spinner("Parsing document and drafting flashcards via Llama 3.1..."):
                 document_chunks = get_markdown_chunks(uploaded_file)
-                
                 raw_drafts = generate_flashcards_from_chunks(
                     document_chunks=document_chunks, 
                     user_instructions=instructions, 
                     target_count=num_cards
                 )
-                
-                flagged_drafts = check_candidate_duplicates(
+                st.session_state.draft_cards = check_candidate_duplicates(
                     candidate_cards=raw_drafts,
                     folder_name=st.session_state.current_folder,
                     deck_name=st.session_state.current_deck
                 )
-                st.session_state.draft_cards = flagged_drafts
 
-    # DRAFTING TABLE (HUMAN-IN-THE-LOOP REVIEW)
     if st.session_state.draft_cards:
         st.divider()
         st.subheader("📋 Drafting Table (Review & Edit)")
@@ -420,9 +382,10 @@ def ingest_document_popup():
             st.success(f"Successfully imported {len(selected_indices)} cards!")
             st.rerun()
 
-# NAVIGATION LOGIC
+# -------------------------------------------------------------------
+# VIEW 3: DECK VIEW
+# -------------------------------------------------------------------
 
-# VIEW 3: INDIVIDUAL DECK VIEW
 if st.session_state.current_folder is not None and st.session_state.current_deck is not None:
     col_nav, col_actions = st.columns([3, 1])
     with col_nav:
@@ -445,12 +408,11 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                     st.session_state.current_deck = None
                     st.rerun()
 
-    st.header(f"Deck: {st.session_state.current_deck}")
+    st.title(f"Deck: {st.session_state.current_deck}")
     st.caption(f"Folder: {st.session_state.current_folder}")
 
-    # ANALYTICS BANNER
+    # Analytics Banner
     analytics = get_deck_analytics(st.session_state.current_folder, st.session_state.current_deck)
-
     col_m1, col_m2, col_m3 = st.columns(3)
     with col_m1:
         st.metric(label="Total Cards", value=analytics["total_cards"])
@@ -465,16 +427,13 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
         st.metric(
             label="Avg. Ease Factor", 
             value=f"{analytics['avg_ease_factor']:.2f}",
-            help="Higher values indicate material that is easier for you to recall (Standard baseline is 2.50)"
+            help="Higher values indicate material that is easier to recall (Standard baseline is 2.50)"
         )
 
-    # WORKLOAD FORECAST EXPANDER WITH TIMEFRAME SELECTOR
     with st.expander("📅 Review Workload Forecast", expanded=False):
         col_fc_info, col_fc_select = st.columns([3, 1])
-        
         with col_fc_info:
             st.caption("Distribution of cards scheduled for review based on SM-2 interval calculations:")
-        
         with col_fc_select:
             forecast_days = st.selectbox(
                 "Forecast Window",
@@ -493,11 +452,9 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
         if not forecast_data:
             st.info("No cards in this deck to forecast.")
         else:
-            # Convert dict to a DataFrame and preserve explicit chronological category order
             df_forecast = pd.DataFrame(list(forecast_data.items()), columns=["Date", "Due Cards"])
             df_forecast["Date"] = pd.Categorical(df_forecast["Date"], categories=list(forecast_data.keys()), ordered=True)
             df_forecast = df_forecast.set_index("Date")
-
             st.bar_chart(df_forecast)
 
     st.divider()
@@ -518,14 +475,13 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
             key=f"tag_filter_{st.session_state.current_folder}_{st.session_state.current_deck}"
         )
 
-    # Filter cards list if tags are selected
     if selected_tags:
         cards = [
             c for c in cards 
             if c.get("tags") and any(t.strip().lower() in selected_tags for t in c.get("tags").split(","))
         ]
 
-    # SUB-TAB 1: CARD LIST & MANAGEMENT
+    # TAB 1: CARD LIST
     with deck_tab_cards:
         col_title, col_btn1, col_btn2, col_btn3 = st.columns([2.5, 1.3, 1, 1.2])
         with col_btn1:
@@ -537,7 +493,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                 new_card_popup()
         with col_btn3:
             if not cards:
-                st.button("📦 Export to Anki", use_container_width=True, disabled=True, help="Add cards before exporting.")
+                st.button("📦 Export to Anki", use_container_width=True, disabled=True)
             else:
                 try:
                     anki_bytes = generate_anki_deck_bytes(
@@ -558,7 +514,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
         st.subheader(f"Cards ({len(cards)})")
 
         if not cards:
-            st.info("No cards in this deck yet. Click '➕ Add Card' or '📄 Ingest Document' above to add some.")
+            st.info("No cards in this deck yet. Click '➕ Add Card' or '📄 Ingest Document' to add some.")
         else:
             for idx, card in enumerate(cards, start=1):
                 card_id = card.get("card_id", f"card_{idx}")
@@ -570,7 +526,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                     with col_card_header:
                         st.markdown(f"**Card {idx}** · `{card_type}` · *Mastery Level: {mastery}*")
                     with col_edit_btn:
-                        if st.button("✏️ Edit", key=f"edit_{card_id}"):
+                        if st.button("✏️ Edit", key=f"edit_btn_{card_id}"):
                             edit_card_popup(card)
                         
                     c_front, c_back = st.columns(2)
@@ -588,9 +544,8 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                         if card.get("media_link"):
                             render_media(card.get("media_link"))
 
-    # SUB-TAB 2: INTERACTIVE STUDY & CRAM MODE
+    # TAB 2: STUDY & CRAM ENGINE
     with deck_tab_study:
-        # 1. Mode Selector Header
         col_mode_title, col_session_type = st.columns([2, 1])
         with col_mode_title:
             st.subheader("📖 Study & Review Engine")
@@ -604,13 +559,11 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
 
         st.divider()
 
-        # -------------------------------------------------------------------
-        # BRANCH A: SPAN-REPETITION MODE (STANDARD SM-2)
-        # -------------------------------------------------------------------
+        # BRANCH A: SM-2 SPACED REPETITION
         if study_mode_type == "Spaced Repetition (SM-2)":
             col_due_toggle, _ = st.columns([1, 2])
             with col_due_toggle:
-                only_due = st.toggle("⏰ Only Due Cards", value=False, help="Filter out cards that are not due for review yet")
+                only_due = st.toggle("⏰ Only Due Cards", value=False)
 
             study_cards = load_deck_cards(
                 st.session_state.current_folder, 
@@ -618,7 +571,6 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                 due_only=only_due
             )
 
-            # Apply Tag Filter if selected in the main tab bar
             if selected_tags:
                 study_cards = [
                     c for c in study_cards 
@@ -629,7 +581,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                 if only_due:
                     st.success("🎉 All caught up! No cards in this deck are currently due for review.")
                 else:
-                    st.info("No cards match your current filters. Add cards or clear tag filters to study!")
+                    st.info("No cards match your current filters.")
             else:
                 total_cards = len(study_cards)
                 if st.session_state.study_card_index >= total_cards:
@@ -641,7 +593,6 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                 st.markdown(f"**Card {curr_idx + 1} of {total_cards}**")
                 st.progress((curr_idx + 1) / total_cards)
 
-                # Flashcard Render Container
                 with st.container(border=True):
                     card_type = curr_card.get("card_type", "concept").upper()
                     interval = curr_card.get("interval_days", 0)
@@ -677,10 +628,10 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                         with col_a_audio:
                             if st.button("🔊 Read Answer", key=f"tts_a_{curr_card.get('card_id')}"):
                                 with st.spinner("Generating audio..."):
-                                    full_answer_text = curr_card.get("back", "")
+                                    full_text = curr_card.get("back", "")
                                     if curr_card.get("explanation"):
-                                        full_answer_text += f". Explanation: {curr_card.get('explanation')}"
-                                    a_audio = generate_tts_audio_bytes(full_answer_text)
+                                        full_text += f". Explanation: {curr_card.get('explanation')}"
+                                    a_audio = generate_tts_audio_bytes(full_text)
                                     if a_audio:
                                         st.audio(a_audio, format="audio/mp3", autoplay=True)
 
@@ -692,7 +643,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                         st.rerun()
 
                 with col_flip:
-                    flip_label = "🙈 Hide Answer" if st.session_state.study_is_flipped else "🔄 Flip Card (Show Answer)"
+                    flip_label = "🙈 Hide Answer" if st.session_state.study_is_flipped else "🔄 Flip Card"
                     if st.button(flip_label, type="primary", use_container_width=True):
                         st.session_state.study_is_flipped = not st.session_state.study_is_flipped
                         st.rerun()
@@ -735,21 +686,15 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                         st.rerun()
 
                     with col_again:
-                        if st.button("🔴 Blackout (0)", use_container_width=True):
-                            process_sm2_review(0)
+                        if st.button("🔴 Blackout (0)", use_container_width=True): process_sm2_review(0)
                     with col_hard:
-                        if st.button("🟠 Hard (1)", use_container_width=True):
-                            process_sm2_review(1)
+                        if st.button("🟠 Hard (1)", use_container_width=True): process_sm2_review(1)
                     with col_good:
-                        if st.button("🟡 Good (2)", use_container_width=True):
-                            process_sm2_review(2)
+                        if st.button("🟡 Good (2)", use_container_width=True): process_sm2_review(2)
                     with col_easy:
-                        if st.button("🟢 Easy (3)", use_container_width=True):
-                            process_sm2_review(3)
+                        if st.button("🟢 Easy (3)", use_container_width=True): process_sm2_review(3)
 
-        # -------------------------------------------------------------------
-        # BRANCH B: CRAM MODE (FOCUSED DRILL)
-        # -------------------------------------------------------------------
+        # BRANCH B: CRAM MODE
         else:
             with st.expander("⚡ Configure Focused Cram Session", expanded=not st.session_state.cram_cards):
                 c1, c2, c3 = st.columns(3)
@@ -811,7 +756,6 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
 
                 with st.container(border=True):
                     st.caption(f"Cram Mode | Type: `{curr_c_card.get('card_type', 'concept').upper()}`")
-                    
                     st.markdown("### Question / Prompt")
                     st.write(curr_c_card.get("front", ""))
                     if curr_c_card.get("code_block"):
@@ -827,7 +771,6 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                             render_media(curr_c_card.get("media_link"))
 
                 col_c_prev, col_c_flip, col_c_next = st.columns([1, 2, 1])
-
                 with col_c_prev:
                     if st.button("⬅️ Previous", key="cram_prev_btn", use_container_width=True, disabled=(curr_c_idx == 0)):
                         st.session_state.cram_card_index -= 1
@@ -880,7 +823,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                     with col_ce:
                         if st.button("🟢 Easy", key="cram_sm2_3", use_container_width=True): process_cram_sm2(3)
 
-    # SUB-TAB 3: AGENTIC RAG CHAT ASSISTANT
+    # TAB 3: AGENTIC CHAT ASSISTANT
     with deck_tab_chat:
         col_chat_title, col_chat_clear = st.columns([4, 1])
         with col_chat_title:
@@ -922,7 +865,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                         st.write(final_response.content)
                         st.session_state[chat_key].append(final_response)
 
-    # SUB-TAB 4: AI QUIZ ENGINE
+    # TAB 4: AI QUIZ ENGINE
     with deck_tab_quiz:
         st.subheader("📝 Active Recall Quiz Generator")
         
@@ -936,11 +879,7 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
 
         col_q_focus, col_q_gen = st.columns([3, 1])
         with col_q_focus:
-            quiz_focus = st.text_input(
-                "Focus Topic (Optional)", 
-                placeholder="e.g. Focus on encapsulation or Big-O analysis",
-                key="quiz_focus_input"
-            )
+            quiz_focus = st.text_input("Focus Topic (Optional)", placeholder="e.g. Focus on encapsulation", key="quiz_focus_input")
         with col_q_gen:
             st.write(" ")
             if st.button("🎲 Generate New Quiz", type="primary", use_container_width=True):
@@ -981,7 +920,6 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                         )
                         st.session_state[grade_key] = evaluation
                         
-                        # Log to SQLite quiz_history
                         log_quiz_attempt(
                             folder_name=st.session_state.current_folder,
                             deck_name=st.session_state.current_deck,
@@ -1012,11 +950,10 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                 with st.expander("📖 View Reference Context"):
                     st.write(current_quiz.get("reference_context", ""))
 
-                # Weak Concept Remediation Trigger
                 if score_str != "Pass" or grade_pct < 70:
                     st.divider()
                     st.subheader("🩹 Weak Concept Remediation")
-                    st.info("Looks like there's a knowledge gap here. Generate targeted flashcards to patch this concept?")
+                    st.info("Generate targeted flashcards to patch this concept?")
 
                     remed_key = f"remed_cards_{st.session_state.current_folder}_{st.session_state.current_deck}"
                     if remed_key not in st.session_state:
@@ -1030,7 +967,6 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                                 user_answer=user_quiz_answer.strip(),
                                 feedback=feedback
                             )
-                            # Run duplicate detection against existing cards in ChromaDB
                             flagged_remed_cards = check_candidate_duplicates(
                                 candidate_cards=raw_remed_cards,
                                 folder_name=st.session_state.current_folder,
@@ -1039,7 +975,6 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                             st.session_state[remed_key] = flagged_remed_cards
                             st.rerun()
 
-                    # Render Remediation Draft Table
                     if st.session_state[remed_key]:
                         st.markdown("#### Drafted Remediation Cards")
                         selected_remed_indices = []
@@ -1087,7 +1022,6 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
             if quiz_stats["total_quizzes"] == 0:
                 st.info("No quiz attempts recorded yet. Submit your first answer above to start tracking performance!")
             else:
-                # Metric Columns
                 col_q1, col_q2, col_q3 = st.columns(3)
                 with col_q1:
                     st.metric("Total Quizzes Taken", quiz_stats["total_quizzes"])
@@ -1096,13 +1030,11 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                 with col_q3:
                     st.metric("Pass Rate (≥70%)", f"{quiz_stats['pass_rate']}%")
 
-                # Score Trend Line Chart
                 scores = [h["grade_percent"] for h in reversed(quiz_stats["history"])]
                 if len(scores) > 1:
                     st.markdown("#### Score Progression")
                     st.line_chart(scores)
 
-                # Recent Attempts Table
                 st.markdown("#### Recent Attempts")
                 for attempt in quiz_stats["history"]:
                     with st.container(border=True):
@@ -1118,12 +1050,11 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
                         st.markdown(f"**Your Answer:** {attempt['user_answer']}")
                         st.caption(f"**Feedback:** {attempt['feedback']}")
 
-    # SUB-TAB 5: VISUAL KNOWLEDGE GRAPH
+    # TAB 5: KNOWLEDGE GRAPH
     with deck_tab_graph:
         st.subheader("🕸️ Concept Knowledge Graph")
         st.caption("Nodes represent flashcards; edges represent semantic similarity derived from vector embeddings.")
 
-        # Lazy execution toggle/slider
         threshold = st.slider(
             "Similarity Connection Threshold", 
             min_value=0.20, max_value=0.80, value=0.45, step=0.05,
@@ -1131,8 +1062,6 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
         )
 
         st.divider()
-
-        # Calculate graph and render ONLY when the tab is active
         with st.spinner("Calculating vector distances and building interactive graph..."):
             graph_html = generate_knowledge_graph_html(
                 folder_name=st.session_state.current_folder,
@@ -1141,11 +1070,14 @@ if st.session_state.current_folder is not None and st.session_state.current_deck
             )
             st.iframe(src=graph_html, height=580)
 
-# VIEW 2: INDIVIDUAL FOLDER VIEW (List of Decks & Folder-Wide Cram)
+# -------------------------------------------------------------------
+# VIEW 2: FOLDER VIEW
+# -------------------------------------------------------------------
+
 elif st.session_state.current_folder is not None:
     col_header, col_f_actions = st.columns([3, 1])
     with col_header:
-        st.header(f"Folder: {st.session_state.current_folder}")
+        st.title(f"Folder: {st.session_state.current_folder}")
     with col_f_actions:
         col_f_ren, col_f_del = st.columns(2)
         with col_f_ren:
@@ -1167,7 +1099,6 @@ elif st.session_state.current_folder is not None:
 
     st.divider()
 
-    # Folder View Sub-Tabs
     folder_tab_decks, folder_tab_cram = st.tabs(["📁 Decks Overview", "⚡ Folder Cram Session"])
 
     # SUB-TAB 1: DECKS LIST
@@ -1199,10 +1130,10 @@ elif st.session_state.current_folder is not None:
                             delete_deck(st.session_state.current_folder, d)
                             st.rerun()
 
-    # SUB-TAB 2: FOLDER-WIDE CRAM SESSION
+    # SUB-TAB 2: FOLDER CRAM SESSION
     with folder_tab_cram:
         st.subheader(f"⚡ Cross-Deck Cramming ({st.session_state.current_folder})")
-        st.caption("Review cards pulled from ALL decks inside this folder, filtered by target tags or difficulty.")
+        st.caption("Review cards pulled from ALL decks inside this folder.")
 
         folder_tags = get_all_folder_tags(st.session_state.current_folder)
 
@@ -1237,7 +1168,6 @@ elif st.session_state.current_folder is not None:
             )
 
             if st.button("🚀 Start Folder Cram Session", type="primary", use_container_width=True):
-                # Leaving deck_name=None fetches across all decks in this folder
                 fetched_folder_cards = load_cram_cards(
                     folder_name=st.session_state.current_folder,
                     deck_name=None,
@@ -1324,7 +1254,6 @@ elif st.session_state.current_folder is not None:
                     u_card["next_review_at"] = n_rev
                     u_card["mastery_level"] = n_rep
                     
-                    # Save back to its parent deck origin
                     save_card(st.session_state.current_folder, curr_fc_card.get("deck_name"), u_card)
                     
                     if st.session_state.cram_card_index < total_f_cram - 1:
@@ -1335,32 +1264,38 @@ elif st.session_state.current_folder is not None:
                 with col_fca:
                     if st.button("🔴 Blackout", key="fcram_sm2_0", use_container_width=True): process_folder_cram_sm2(0)
                 with col_fch:
-                    if st.button("🟠 Hard", key="fcram_sm2_1", use_container_width=True): process_folder_cram_sm2(0)
+                    if st.button("🟠 Hard", key="fcram_sm2_1", use_container_width=True): process_folder_cram_sm2(1)
                 with col_fcg:
                     if st.button("🟡 Good", key="fcram_sm2_2", use_container_width=True): process_folder_cram_sm2(2)
                 with col_fce:
                     if st.button("🟢 Easy", key="fcram_sm2_3", use_container_width=True): process_folder_cram_sm2(3)
 
+# -------------------------------------------------------------------
 # VIEW 1: ALL FOLDERS VIEW
+# -------------------------------------------------------------------
+
 else:
-    if st.button("➕ Add New Folder"):
+    if st.button("➕ Add New Folder", type="primary"):
         new_folder_popup()
 
     st.subheader("All Folders")
     folders = get_all_folders()
 
-    for f in folders:
-        col_f_btn, col_f_ren, col_f_del = st.columns([4, 1, 1])
-        with col_f_btn:
-            if st.button(f, key=f"folder_btn_{f}", use_container_width=True):
-                st.session_state.current_folder = f
-                st.rerun()
-        with col_f_ren:
-            if st.button("✏️", key=f"ren_fold_{f}"):
-                rename_folder_popup(f)
-        with col_f_del:
-            with st.popover("🗑️", key=f"del_fold_pop_{f}"):
-                st.warning(f"Delete folder '{f}' and contents?")
-                if st.button("Confirm Delete", key=f"confirm_del_fold_{f}", type="primary"):
-                    delete_folder(f)
+    if not folders:
+        st.info("No folders created yet. Click '➕ Add New Folder' above to get started!")
+    else:
+        for f in folders:
+            col_f_btn, col_f_ren, col_f_del = st.columns([4, 1, 1])
+            with col_f_btn:
+                if st.button(f, key=f"folder_btn_{f}", use_container_width=True):
+                    st.session_state.current_folder = f
                     st.rerun()
+            with col_f_ren:
+                if st.button("✏️", key=f"ren_fold_{f}"):
+                    rename_folder_popup(f)
+            with col_f_del:
+                with st.popover("🗑️", key=f"del_fold_pop_{f}"):
+                    st.warning(f"Delete folder '{f}' and contents?")
+                    if st.button("Confirm Delete", key=f"confirm_del_fold_{f}", type="primary"):
+                        delete_folder(f)
+                        st.rerun()
