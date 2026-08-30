@@ -1,16 +1,8 @@
 import uuid
-from typing import List, Dict
-from db import get_db_connection
-from vector_utils import (
-    upsert_card_to_chroma, 
-    delete_card_from_chroma, 
-    delete_deck_from_chroma, 
-    delete_folder_from_chroma, 
-    rename_deck_in_chroma, 
-    rename_folder_in_chroma, 
-    get_collection
-)
+from typing import List, Dict, Any
 from datetime import datetime, timedelta, date
+from db import get_db_connection
+from vector_utils import upsert_card_to_chroma, delete_card_from_chroma, delete_deck_from_chroma, delete_folder_from_chroma, rename_deck_in_chroma, rename_folder_in_chroma, get_collection
 
 # -------------------------------------------------------------------
 # FOLDER OPERATIONS
@@ -92,7 +84,7 @@ def delete_folder(folder_name: str) -> bool:
         delete_folder_from_chroma(clean_name)
         return True
 
-def get_all_folder_tags(folder_name: str) -> list[str]:
+def get_all_folder_tags(folder_name: str) -> List[str]:
     """Returns a sorted list of unique tags across ALL decks in a folder."""
     clean_folder = folder_name.strip()
     with get_db_connection() as conn:
@@ -137,7 +129,7 @@ def get_decks_in_folder(folder_name: str) -> List[str]:
         rows = cursor.execute(query, (clean_folder,)).fetchall()
         return [r["name"] for r in rows]
 
-def get_all_deck_tags(folder_name: str, deck_name: str) -> list[str]:
+def get_all_deck_tags(folder_name: str, deck_name: str) -> List[str]:
     """Returns a sorted list of unique tags used in a specific deck."""
     clean_folder = folder_name.strip()
     clean_deck = deck_name.strip()
@@ -246,7 +238,7 @@ def delete_deck(folder_name: str, deck_name: str) -> bool:
         delete_deck_from_chroma(clean_folder, clean_deck)
         return True
 
-def get_deck_analytics(folder_name: str, deck_name: str) -> Dict[str, any]:
+def get_deck_analytics(folder_name: str, deck_name: str) -> Dict[str, Any]:
     """Returns total active cards, due count, and average ease factor for a deck."""
     clean_folder = folder_name.strip()
     clean_deck = deck_name.strip()
@@ -280,14 +272,23 @@ def get_review_forecast(folder_name: str, deck_name: str, days: int = 7) -> Dict
     clean_folder = folder_name.strip()
     clean_deck = deck_name.strip()
 
-    cards = load_deck_cards(clean_folder, clean_deck)
-    if not cards:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        query = """
+            SELECT c.next_review_at 
+            FROM cards c
+            JOIN decks d ON c.deck_id = d.id
+            JOIN folders f ON d.folder_id = f.id
+            WHERE f.name = ? AND d.name = ? 
+              AND f.is_deleted = 0 AND d.is_deleted = 0 AND c.is_deleted = 0;
+        """
+        rows = cursor.execute(query, (clean_folder, clean_deck)).fetchall()
+
+    if not rows:
         return {}
 
     today = date.today()
-    forecast_buckets = {}
-    
-    forecast_buckets["Overdue / Today"] = 0
+    forecast_buckets = {"Overdue / Today": 0}
     
     for i in range(1, days):
         day_date = today + timedelta(days=i)
@@ -296,8 +297,8 @@ def get_review_forecast(folder_name: str, deck_name: str, days: int = 7) -> Dict
 
     forecast_buckets[f"+{days} Days+"] = 0
 
-    for card in cards:
-        next_review_str = card.get("next_review_at")
+    for row in rows:
+        next_review_str = row["next_review_at"]
         
         if not next_review_str:
             forecast_buckets["Overdue / Today"] += 1
@@ -363,11 +364,6 @@ def load_cram_cards(folder_name: str, deck_name: str = None, selected_tags: List
     """
     Fetches active cards for a custom cram session based on folder/deck scope,
     tags, difficulty metrics, and optional card limits.
-    
-    difficulty_filter options:
-      - 'all': All matching cards
-      - 'hard': ease_factor < 2.3 or high failure history
-      - 'unseen': repetition_count == 0
     """
     clean_folder = folder_name.strip()
     clean_deck = deck_name.strip() if deck_name else None
@@ -385,18 +381,15 @@ def load_cram_cards(folder_name: str, deck_name: str = None, selected_tags: List
               AND f.is_deleted = 0 AND d.is_deleted = 0 AND c.is_deleted = 0
         """
 
-        # 1. Single Deck Scope vs. Entire Folder Scope
         if clean_deck:
             base_query += " AND d.name = ?"
             query_params.append(clean_deck)
 
-        # 2. Difficulty Filtering
         if difficulty_filter == "hard":
             base_query += " AND (c.ease_factor < 2.3 OR c.mastery_level = 0)"
         elif difficulty_filter == "unseen":
             base_query += " AND c.repetition_count = 0"
 
-        # Sort hard cards first for cram sessions, then by creation date
         base_query += " ORDER BY c.ease_factor ASC, c.created_at ASC"
 
         rows = cursor.execute(base_query, query_params).fetchall()
@@ -411,14 +404,12 @@ def load_cram_cards(folder_name: str, deck_name: str = None, selected_tags: List
         card_tags_str = card_dict.get("tags") or ""
         card_tags = [t.strip().lower() for t in card_tags_str.split(",") if t.strip()]
 
-        # 3. Multi-Tag Filtering Check
         if normalized_tags:
             if not any(tag in card_tags for tag in normalized_tags):
                 continue
 
         cards.append(card_dict)
 
-    # 4. Optional Card Limit Cap
     if card_limit > 0 and len(cards) > card_limit:
         cards = cards[:card_limit]
 
@@ -589,10 +580,14 @@ def save_card_batch(folder_name: str, deck_name: str, cards: List[Dict]) -> bool
             collection = get_collection()
             collection.upsert(documents=documents, metadatas=metadatas, ids=ids_to_sync)
 
-            cursor.execute(
-                f"UPDATE cards SET synced_to_chroma = 1 WHERE id IN ({','.join(['?']*len(ids_to_sync))});", 
-                ids_to_sync
-            )
+            # Chunk parameter updates to stay under SQLite variable limits (max 900 per batch)
+            chunk_size = 900
+            for i in range(0, len(ids_to_sync), chunk_size):
+                chunk_ids = ids_to_sync[i:i + chunk_size]
+                cursor.execute(
+                    f"UPDATE cards SET synced_to_chroma = 1 WHERE id IN ({','.join(['?']*len(chunk_ids))});", 
+                    chunk_ids
+                )
             conn.commit()
         except Exception as e:
             print(f"Warning: Batch ChromaDB sync failed, auto-heal will handle it: {e}")
@@ -634,7 +629,7 @@ def log_quiz_attempt(folder_name: str, deck_name: str, question: str, user_answe
         conn.commit()
         return True
 
-def get_quiz_analytics(folder_name: str, deck_name: str) -> Dict[str, any]:
+def get_quiz_analytics(folder_name: str, deck_name: str) -> Dict[str, Any]:
     """Retrieves aggregated quiz statistics and history logs for a specific deck."""
     clean_folder = folder_name.strip()
     clean_deck = deck_name.strip()

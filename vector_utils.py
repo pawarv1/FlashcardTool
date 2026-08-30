@@ -15,16 +15,18 @@ def get_collection():
     )
 
 def upsert_card_to_chroma(folder_name: str, deck_name: str, card_data: dict):
-    """Adds or updates a card embedding in ChromaDB using only the front text."""
+    """Adds or updates a card embedding in ChromaDB using front text or fallback content."""
     collection = get_collection()
     
     card_id = card_data["card_id"]
     front_text = card_data.get("front", "").strip()
+    back_text = card_data.get("back", "").strip()
+    doc_to_embed = front_text or back_text or f"Card {card_id}"
     
     metadata = {
         "card_id": card_id,
         "front": front_text,
-        "back": card_data.get("back", ""),
+        "back": back_text,
         "folder": folder_name.strip().replace(" ", "_"),
         "deck": deck_name.strip().replace(" ", "_").lower(),
         "card_type": card_data.get("card_type", "concept"),
@@ -33,7 +35,7 @@ def upsert_card_to_chroma(folder_name: str, deck_name: str, card_data: dict):
         "source_type": card_data.get("source_type", "manual_entry")
     }
     
-    collection.upsert(documents=[front_text], metadatas=[metadata], ids=[card_id])
+    collection.upsert(documents=[doc_to_embed], metadatas=[metadata], ids=[card_id])
 
 def delete_card_from_chroma(card_id: str):
     """Removes a single card from ChromaDB by card_id."""
@@ -85,7 +87,7 @@ def rename_deck_in_chroma(folder_name: str, old_deck_name: str, new_deck_name: s
                 ]
             }
         )
-        if results and results["ids"]:
+        if results and results.get("ids"):
             updated_metadatas = []
             for meta in results["metadatas"]:
                 meta["deck"] = clean_new_deck
@@ -103,7 +105,7 @@ def rename_folder_in_chroma(old_folder_name: str, new_folder_name: str):
     collection = get_collection()
     try:
         results = collection.get(where={"folder": clean_old_folder})
-        if results and results["ids"]:
+        if results and results.get("ids"):
             updated_metadatas = []
             for meta in results["metadatas"]:
                 meta["folder"] = clean_new_folder
@@ -115,7 +117,7 @@ def rename_folder_in_chroma(old_folder_name: str, new_folder_name: str):
 
 def check_candidate_duplicates(candidate_cards: list, folder_name: str = None, deck_name: str = None, distance_threshold: float = 0.45) -> list:
     """
-    Checks candidate cards against ChromaDB AND intra-batch using vector similarity and normalized text.
+    Checks candidate cards against ChromaDB AND intra-batch using vector similarity and exact normalized text matching.
     """
     collection = get_collection()
 
@@ -143,37 +145,47 @@ def check_candidate_duplicates(candidate_cards: list, folder_name: str = None, d
         clean_front = "".join(c for c in front_text.lower() if c.isalnum() or c.isspace())
         clean_back = "".join(c for c in back_text.lower() if c.isalnum() or c.isspace())
 
-        # 1. Intra-batch check (Check if back answer is identical OR normalized question overlaps)
+        # 1. Intra-batch check (Exact normalized match for front or back text)
         for idx, (seen_f, seen_b) in enumerate(zip(seen_fronts, seen_backs)):
             if clean_back and clean_back == seen_b:
                 is_duplicate = True
                 matched_text = f"Identical answer to Card #{idx+1} in this batch"
                 break
             
-            if clean_front and (clean_front in seen_f or seen_f in clean_front):
+            if clean_front and clean_front == seen_f:
                 is_duplicate = True
-                matched_text = f"Similar question to Card #{idx+1} in this batch"
+                matched_text = f"Identical question to Card #{idx+1} in this batch"
                 break
 
         # 2. ChromaDB search (for existing cards in database)
         if not is_duplicate and collection.count() > 0:
-            try:
-                results = collection.query(
-                    query_texts=[front_text],
-                    n_results=1,
-                    where=where_filter
-                )
+            query_doc = front_text or back_text
+            if query_doc:
+                try:
+                    results = collection.query(
+                        query_texts=[query_doc],
+                        n_results=1,
+                        where=where_filter
+                    )
 
-                if results and results.get("distances") and len(results["distances"][0]) > 0:
-                    top_distance = results["distances"][0][0]
-                    
-                    if top_distance < distance_threshold:
-                        is_duplicate = True
-                        matched_meta = results["metadatas"][0][0] if results.get("metadatas") and len(results["metadatas"][0]) > 0 else {}
-                        doc_match = results["documents"][0][0] if results.get("documents") and len(results["documents"][0]) > 0 else ""
-                        matched_text = matched_meta.get("front") or doc_match
-            except Exception as e:
-                print(f"Warning: Deduplication query error: {e}")
+                    if results and results.get("distances") and len(results["distances"][0]) > 0:
+                        top_distance = results["distances"][0][0]
+                        
+                        if top_distance < distance_threshold:
+                            is_duplicate = True
+                            matched_meta = (
+                                results["metadatas"][0][0] 
+                                if results.get("metadatas") and len(results["metadatas"][0]) > 0 
+                                else {}
+                            )
+                            doc_match = (
+                                results["documents"][0][0] 
+                                if results.get("documents") and len(results["documents"][0]) > 0 
+                                else ""
+                            )
+                            matched_text = matched_meta.get("front") or doc_match
+                except Exception as e:
+                    print(f"Warning: Deduplication query error: {e}")
 
         card["is_duplicate"] = is_duplicate
         card["matched_existing_front"] = matched_text

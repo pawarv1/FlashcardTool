@@ -65,6 +65,14 @@ def init_db():
             );
         """)
 
+        # Safe Column Migrations (for pre-existing databases)
+        cursor.execute("PRAGMA table_info(cards)")
+        existing_columns = [col[1] for col in cursor.fetchall()]
+        if "media_link" not in existing_columns:
+            cursor.execute("ALTER TABLE cards ADD COLUMN media_link TEXT;")
+        if "tags" not in existing_columns:
+            cursor.execute("ALTER TABLE cards ADD COLUMN tags TEXT;")
+
         # 4. Quiz History Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS quiz_history (
@@ -93,7 +101,6 @@ def init_db():
 
 def auto_heal_chroma_sync():
     """Scans SQLite for unsynced active cards and auto-upserts them to ChromaDB."""
-    
     with get_db_connection() as conn:
         cursor = conn.cursor()
         query = """
@@ -121,16 +128,18 @@ def auto_heal_chroma_sync():
 
         for row in unsynced_cards:
             card = dict(row)
-            front_text = card["front"].strip()
+            front_text = (card.get("front") or "").strip()
+            back_text = (card.get("back") or "").strip()
             card_id = card["id"]
             
             clean_folder = card["folder_name"].strip().replace(" ", "_")
             clean_deck = card["deck_name"].strip().replace(" ", "_").lower()
+            doc_to_embed = front_text or back_text or f"Card {card_id}"
             
             metadata = {
                 "card_id": card_id,
                 "front": front_text,
-                "back": card["back"],
+                "back": back_text,
                 "folder": clean_folder,
                 "deck": clean_deck,
                 "card_type": card.get("card_type", "concept"),
@@ -139,7 +148,7 @@ def auto_heal_chroma_sync():
                 "source_type": card.get("source_type", "manual_entry")
             }
             
-            documents.append(front_text)
+            documents.append(doc_to_embed)
             metadatas.append(metadata)
             ids.append(card_id)
 
