@@ -7,13 +7,12 @@ def get_db_connection():
     """Returns a SQLite connection object with dict-like row formatting and FK constraints enabled."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    # Enforce Foreign Keys & Enable Write-Ahead Logging
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
     return conn
 
 def init_db():
-    """Initializes normalized SQLite tables, schema indices, schema migrations, and soft-delete defaults."""
+    """Initializes normalized SQLite tables, schema indices, and soft-delete defaults."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         
@@ -43,7 +42,7 @@ def init_db():
         # 3. Cards Table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS cards (
-                id TEXT PRIMARY KEY,
+                card_id TEXT PRIMARY KEY,
                 deck_id INTEGER NOT NULL,
                 card_type TEXT DEFAULT 'concept',
                 front TEXT NOT NULL,
@@ -65,27 +64,19 @@ def init_db():
             );
         """)
 
-        # Safe Column Migrations (for pre-existing databases)
-        cursor.execute("PRAGMA table_info(cards)")
-        existing_columns = [col[1] for col in cursor.fetchall()]
-        if "media_link" not in existing_columns:
-            cursor.execute("ALTER TABLE cards ADD COLUMN media_link TEXT;")
-        if "tags" not in existing_columns:
-            cursor.execute("ALTER TABLE cards ADD COLUMN tags TEXT;")
-
         # 4. Quiz History Table
         cursor.execute("""
-        CREATE TABLE IF NOT EXISTS quiz_history (
-            id TEXT PRIMARY KEY,
-            folder_name TEXT NOT NULL,
-            deck_name TEXT NOT NULL,
-            question TEXT NOT NULL,
-            user_answer TEXT,
-            score_label TEXT,
-            grade_percent INTEGER NOT NULL,
-            feedback TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
+            CREATE TABLE IF NOT EXISTS quiz_history (
+                id TEXT PRIMARY KEY,
+                folder_name TEXT NOT NULL,
+                deck_name TEXT NOT NULL,
+                question TEXT NOT NULL,
+                user_answer TEXT,
+                score_label TEXT,
+                grade_percent INTEGER NOT NULL,
+                feedback TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         """)
 
         # Speed up common queries with indexes
@@ -105,16 +96,16 @@ def auto_heal_chroma_sync():
         cursor = conn.cursor()
         query = """
             SELECT 
-            f.name AS folder_name,
-            d.name AS deck_name,
-            c.*
+                f.name AS folder_name,
+                d.name AS deck_name,
+                c.*
             FROM folders f
             JOIN decks d ON d.folder_id = f.id
             JOIN cards c ON c.deck_id = d.id
             WHERE c.synced_to_chroma = 0
-            AND c.is_deleted = 0
-            AND d.is_deleted = 0
-            AND f.is_deleted = 0;
+              AND c.is_deleted = 0
+              AND d.is_deleted = 0
+              AND f.is_deleted = 0;
         """
         unsynced_cards = cursor.execute(query).fetchall()
         
@@ -130,7 +121,7 @@ def auto_heal_chroma_sync():
             card = dict(row)
             front_text = (card.get("front") or "").strip()
             back_text = (card.get("back") or "").strip()
-            card_id = card["id"]
+            card_id = card["card_id"]
             
             clean_folder = card["folder_name"].strip().replace(" ", "_")
             clean_deck = card["deck_name"].strip().replace(" ", "_").lower()
@@ -154,9 +145,8 @@ def auto_heal_chroma_sync():
 
         try:
             collection.upsert(documents=documents, metadatas=metadatas, ids=ids)
-            # Mark as synced in SQLite
             cursor.executemany(
-                "UPDATE cards SET synced_to_chroma = 1 WHERE id = ?;",
+                "UPDATE cards SET synced_to_chroma = 1 WHERE card_id = ?;",
                 [(cid,) for cid in ids]
             )
             conn.commit()

@@ -16,7 +16,6 @@ def process_and_save_media(uploaded_file, max_width: int = 1200, quality: int = 
     """
     ensure_media_dir()
     
-    # Extract extension safely and generate random UUID base name
     file_ext = os.path.splitext(uploaded_file.name)[1].lower()
     unique_name = uuid.uuid4().hex
     

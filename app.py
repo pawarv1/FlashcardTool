@@ -6,8 +6,6 @@ from datetime import datetime
 from gtts import gTTS
 import streamlit as st
 from langchain_core.messages import HumanMessage
-
-# Local Modules
 from db import init_db, auto_heal_chroma_sync
 from document_parser import get_markdown_chunks, parse_csv_direct_to_cards
 from card_generator import generate_flashcards_from_chunks, CardTypeEnum, generate_remediation_cards
@@ -26,6 +24,7 @@ from sm2_utils import calculate_sm2
 from graph_utils import generate_knowledge_graph_html
 from media_utils import process_and_save_media
 from backup_utils import create_system_backup_zip, restore_system_from_zip
+from ollama_service import start_ollama
 
 # -------------------------------------------------------------------
 # INITIALIZATION & SESSION STATE
@@ -33,7 +32,8 @@ from backup_utils import create_system_backup_zip, restore_system_from_zip
 
 @st.cache_resource
 def setup_database():
-    """Runs database initialization and vector sync healing once per app startup."""
+    """Runs system startup operations once per app launch."""
+    start_ollama()
     init_db()
     auto_heal_chroma_sync()
     return True

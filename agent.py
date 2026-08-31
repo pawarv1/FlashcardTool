@@ -73,7 +73,6 @@ def agent_node(state: State):
     response = llm_with_tools.invoke(messages)
     return {"messages": [response]}
 
-# Build StateGraph
 builder = StateGraph(State)
 
 builder.add_node("agent", agent_node)

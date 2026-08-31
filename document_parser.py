@@ -88,7 +88,7 @@ def parse_csv_direct_to_cards(uploaded_file) -> list[dict]:
 
 def extract_text_from_file(uploaded_file) -> str:
     """
-    Converts uploaded files (.txt, .md, .pdf, .docx, .pptx, .csv, .html, .ipynb)
+    Converts uploaded files (.txt, .md, .pdf, .docx, .pptx, .html, .ipynb)
     into structured Markdown text ready for LLM processing.
     """
     filename = uploaded_file.name.lower()

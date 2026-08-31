@@ -145,7 +145,7 @@ def check_candidate_duplicates(candidate_cards: list, folder_name: str = None, d
         clean_front = "".join(c for c in front_text.lower() if c.isalnum() or c.isspace())
         clean_back = "".join(c for c in back_text.lower() if c.isalnum() or c.isspace())
 
-        # 1. Intra-batch check (Exact normalized match for front or back text)
+        # 1. Intra-batch check
         for idx, (seen_f, seen_b) in enumerate(zip(seen_fronts, seen_backs)):
             if clean_back and clean_back == seen_b:
                 is_duplicate = True

@@ -247,7 +247,7 @@ def get_deck_analytics(folder_name: str, deck_name: str) -> Dict[str, Any]:
         cursor = conn.cursor()
         query = """
             SELECT 
-                COUNT(c.id) AS total_cards,
+                COUNT(c.card_id) AS total_cards,
                 SUM(CASE WHEN c.next_review_at IS NULL OR c.next_review_at <= CURRENT_TIMESTAMP THEN 1 ELSE 0 END) AS due_cards,
                 AVG(c.ease_factor) AS avg_ease_factor
             FROM cards c
@@ -352,13 +352,8 @@ def load_deck_cards(folder_name: str, deck_name: str, due_only: bool = False) ->
         base_query += " ORDER BY c.next_review_at ASC, c.created_at ASC;"
 
         rows = cursor.execute(base_query, (clean_folder, clean_deck)).fetchall()
-        
-        cards = []
-        for r in rows:
-            card_dict = dict(r)
-            card_dict["card_id"] = card_dict.pop("id")
-            cards.append(card_dict)
-        return cards
+
+    return [dict(row) for row in rows]
 
 def load_cram_cards(folder_name: str, deck_name: str = None, selected_tags: List[str] = None, difficulty_filter: str = "all", card_limit: int = 0) -> List[Dict]:
     """
@@ -399,7 +394,6 @@ def load_cram_cards(folder_name: str, deck_name: str = None, selected_tags: List
 
     for r in rows:
         card_dict = dict(r)
-        card_dict["card_id"] = card_dict.pop("id")
         
         card_tags_str = card_dict.get("tags") or ""
         card_tags = [t.strip().lower() for t in card_tags_str.split(",") if t.strip()]
@@ -437,20 +431,20 @@ def save_card(folder_name: str, deck_name: str, card_data: Dict) -> bool:
 
         query = """
             INSERT INTO cards (
-                id, deck_id, card_type, front, back, code_block, explanation, media_link,
+                card_id, deck_id, card_type, front, back, code_block, explanation, media_link,
                 source_type, mastery_level, tags, ease_factor, interval_days, 
                 repetition_count, next_review_at, synced_to_chroma, is_deleted
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
-            ON CONFLICT(id) DO UPDATE SET
+            ON CONFLICT(card_id) DO UPDATE SET
                 card_type = excluded.card_type,
                 front = excluded.front,
                 back = excluded.back,
                 code_block = excluded.code_block,
                 explanation = excluded.explanation,
                 media_link = excluded.media_link,
-                tags = excluded.tags,
                 source_type = excluded.source_type,
                 mastery_level = excluded.mastery_level,
+                tags = excluded.tags,
                 ease_factor = excluded.ease_factor,
                 interval_days = excluded.interval_days,
                 repetition_count = excluded.repetition_count,
@@ -479,13 +473,7 @@ def save_card(folder_name: str, deck_name: str, card_data: Dict) -> bool:
         conn.commit()
 
         card_data["card_id"] = card_id
-        try:
-            upsert_card_to_chroma(clean_folder, clean_deck, card_data)
-            cursor.execute("UPDATE cards SET synced_to_chroma = 1 WHERE id = ?;", (card_id,))
-            conn.commit()
-        except Exception as e:
-            print(f"Warning: Failed to sync card {card_id} to ChromaDB: {e}")
-
+        upsert_card_to_chroma(clean_folder, clean_deck, card_data)
         return True
 
 def save_card_batch(folder_name: str, deck_name: str, cards: List[Dict]) -> bool:
@@ -512,20 +500,20 @@ def save_card_batch(folder_name: str, deck_name: str, cards: List[Dict]) -> bool
         
         query = """
             INSERT INTO cards (
-                id, deck_id, card_type, front, back, code_block, explanation, media_link,
+                card_id, deck_id, card_type, front, back, code_block, explanation, media_link,
                 source_type, mastery_level, tags, ease_factor, interval_days, 
                 repetition_count, next_review_at, synced_to_chroma, is_deleted
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
-            ON CONFLICT(id) DO UPDATE SET
+            ON CONFLICT(card_id) DO UPDATE SET
                 card_type = excluded.card_type,
                 front = excluded.front,
                 back = excluded.back,
                 code_block = excluded.code_block,
                 explanation = excluded.explanation,
                 media_link = excluded.media_link,
-                tags = excluded.tags,
                 source_type = excluded.source_type,
                 mastery_level = excluded.mastery_level,
+                tags = excluded.tags,
                 ease_factor = excluded.ease_factor,
                 interval_days = excluded.interval_days,
                 repetition_count = excluded.repetition_count,
@@ -534,6 +522,7 @@ def save_card_batch(folder_name: str, deck_name: str, cards: List[Dict]) -> bool
                 is_deleted = 0;
         """
 
+        db_params = []
         ids_to_sync = []
         documents = []
         metadatas = []
@@ -542,7 +531,7 @@ def save_card_batch(folder_name: str, deck_name: str, cards: List[Dict]) -> bool
             card_id = card.get("card_id") or str(uuid.uuid4())
             card["card_id"] = card_id
             
-            cursor.execute(query, (
+            db_params.append((
                 card_id,
                 deck_id,
                 card.get("card_type", "concept"),
@@ -574,6 +563,7 @@ def save_card_batch(folder_name: str, deck_name: str, cards: List[Dict]) -> bool
                 "source_type": card.get("source_type", "manual_entry")
             })
 
+        cursor.executemany(query, db_params)
         conn.commit()
 
         try:
@@ -585,7 +575,7 @@ def save_card_batch(folder_name: str, deck_name: str, cards: List[Dict]) -> bool
             for i in range(0, len(ids_to_sync), chunk_size):
                 chunk_ids = ids_to_sync[i:i + chunk_size]
                 cursor.execute(
-                    f"UPDATE cards SET synced_to_chroma = 1 WHERE id IN ({','.join(['?']*len(chunk_ids))});", 
+                    f"UPDATE cards SET synced_to_chroma = 1 WHERE card_id IN ({','.join(['?']*len(chunk_ids))});", 
                     chunk_ids
                 )
             conn.commit()
@@ -598,7 +588,7 @@ def delete_card(card_id: str) -> bool:
     """Soft-deletes a card from SQLite and removes its vector from ChromaDB."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("UPDATE cards SET is_deleted = 1 WHERE id = ?;", (card_id,))
+        cursor.execute("UPDATE cards SET is_deleted = 1 WHERE card_id = ?;", (card_id,))
         if cursor.rowcount > 0:
             conn.commit()
             delete_card_from_chroma(card_id)

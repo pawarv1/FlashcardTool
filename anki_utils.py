@@ -60,7 +60,7 @@ def generate_anki_deck_bytes(folder_name: str, deck_name: str) -> bytes:
     clean_folder = folder_name.strip().replace(" ", "_")
     clean_deck = deck_name.strip().replace(" ", "_").lower()
 
-    # Deterministic deck ID using Adler32 CRC hashing (cross-session stable)
+    # Deterministic deck ID using Adler32 CRC hashing for cross session stability
     deck_identifier_string = f"{clean_folder}::{clean_deck}"
     deck_id = (zlib.adler32(deck_identifier_string.encode('utf-8')) & 0xffffffff) % (10**9)
     display_title = f"{folder_name} :: {deck_name}"
