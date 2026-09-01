@@ -2,13 +2,15 @@ import os
 import tempfile
 import html
 import numpy as np
+import streamlit as st
 from pyvis.network import Network
 from vector_utils import get_collection
 
-def generate_knowledge_graph_html(folder_name: str, deck_name: str, similarity_threshold: float = 0.45) -> str:
+@st.cache_data(ttl=300, show_spinner=False)
+def compute_deck_similarity_matrix(folder_name: str, deck_name: str):
     """
-    Queries ChromaDB for all card embeddings in a deck, computes pairwise vector distances,
-    and generates a dark-mode interactive PyVis graph HTML string.
+    Queries ChromaDB for card embeddings and calculates their pairwise cosine 
+    similarity matrix. Cached for 5 minutes per deck to optimize UI responsiveness.
     """
     clean_folder = folder_name.strip().replace(" ", "_")
     clean_deck = deck_name.strip().replace(" ", "_").lower()
@@ -27,14 +29,34 @@ def generate_knowledge_graph_html(folder_name: str, deck_name: str, similarity_t
         )
     except Exception as e:
         print(f"Error querying vectors for graph: {e}")
-        return "<h4 style='color: #e6edf3;'>Unable to load knowledge graph vectors.</h4>"
+        return [], None, [], []
 
     if not results or not results.get("ids"):
-        return "<div style='color: #90a4ae; padding: 20px; text-align: center;'>No cards found in this deck to map. Add flashcards to generate a graph!</div>"
+        return [], None, [], []
 
     ids = results["ids"]
-    metadatas = results["metadatas"]
-    documents = results["documents"]
+    metadatas = results.get("metadatas") or []
+    documents = results.get("documents") or []
+    embeddings = results.get("embeddings")
+
+    similarity_matrix = None
+    if embeddings is not None and len(embeddings) > 1:
+        emb_matrix = np.array(embeddings)
+        norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        norm_emb = emb_matrix / norms
+        similarity_matrix = np.dot(norm_emb, norm_emb.T)
+
+    return ids, similarity_matrix, metadatas, documents
+
+def generate_knowledge_graph_html(folder_name: str, deck_name: str, similarity_threshold: float = 0.45) -> str:
+    """
+    Generates a dark-mode interactive PyVis graph HTML string using cached vector similarity matrix data.
+    """
+    ids, similarity_matrix, metadatas, documents = compute_deck_similarity_matrix(folder_name, deck_name)
+
+    if not ids:
+        return "<div style='color: #90a4ae; padding: 20px; text-align: center;'>No cards found in this deck to map. Add flashcards to generate a graph!</div>"
 
     # Initialize PyVis Network with Dark Mode Settings
     net = Network(
@@ -47,13 +69,13 @@ def generate_knowledge_graph_html(folder_name: str, deck_name: str, similarity_t
 
     # 1. Add Nodes
     for idx, card_id in enumerate(ids):
-        meta = metadatas[idx] if metadatas else {}
-        front_text = meta.get("front") or (documents[idx] if documents else f"Card {idx+1}")
+        meta = metadatas[idx] if idx < len(metadatas) else {}
+        doc = documents[idx] if idx < len(documents) else f"Card {idx+1}"
+        front_text = meta.get("front") or doc
         card_type = meta.get("card_type", "concept").upper()
         clean_front_text = html.escape(front_text)
         
         short_label = front_text[:30] + "..." if len(front_text) > 30 else front_text
-
         tooltip_text = f"Type: {card_type}\nPrompt: {clean_front_text}"
 
         net.add_node(
@@ -66,17 +88,8 @@ def generate_knowledge_graph_html(folder_name: str, deck_name: str, similarity_t
             size=18
         )
 
-    # 2. Compute Cosine Distance Edges
-    embeddings = results.get("embeddings")
-    if embeddings is not None and len(embeddings) > 1:
-
-        emb_matrix = np.array(embeddings)
-        norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        norm_emb = emb_matrix / norms
-
-        similarity_matrix = np.dot(norm_emb, norm_emb.T)
-
+    # 2. Add Edges based on Pre-calculated Cosine Similarity Matrix
+    if similarity_matrix is not None and len(ids) > 1:
         num_nodes = len(ids)
         for i in range(num_nodes):
             for j in range(i + 1, num_nodes):
@@ -84,7 +97,7 @@ def generate_knowledge_graph_html(folder_name: str, deck_name: str, similarity_t
                 
                 # Connect nodes if similarity meets or exceeds user threshold
                 if sim_score >= similarity_threshold:
-                    # Scale edge width and opacity by similarity score
+                    # Scale edge width by similarity score
                     edge_width = max(1.0, (sim_score - similarity_threshold) * 8.0)
                     
                     net.add_edge(
